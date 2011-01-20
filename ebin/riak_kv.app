@@ -5,6 +5,8 @@
   {description, "Riak Key/Value Store"},
   {vsn, "0.14.0"},
   {modules, [
+gen_fsm_test_driver,
+test_driver_test_fsm,
              lk,
              raw_link_walker,
              riak,
