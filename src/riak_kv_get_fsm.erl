@@ -50,14 +50,14 @@
                 bkey :: {riak_object:bucket(), riak_object:key()},
                 ring :: riak_core_ring:riak_core_ring(),
                 startnow :: {pos_integer(), pos_integer(), pos_integer()},
-                debug_p :: boolean(),
-                options :: list()
+                pure_p :: boolean(),
+                pure_opts :: list()
                }).
 
 %% Inventory of impure actions:
 %%  x riak_core_ring_manager:get_my_ring()
 %%  x timer:send_after()
-%%  * riak_core_util:chash_key()
+%%  x riak_core_util:chash_key()
 %%  x riak_core_bucket:get_bucket()
 %%  x Client ! ...
 %%  x riak_core_node_watcher:nodes()
@@ -75,20 +75,17 @@
 start(ReqId,Bucket,Key,R,Timeout,From) ->
     gen_fsm:start(?MODULE, {ReqId,Bucket,Key,R,Timeout,From,[]}, []).
 
-pure_start(FsmID,ReqId,Bucket,Key,R,Timeout,From,Options) ->
-    gen_fsm_test_driver:start(FsmID, ?MODULE, {ReqId,Bucket,Key,R,Timeout,From,Options}).
+pure_start(FsmID,ReqId,Bucket,Key,R,Timeout,From,PureOpts) ->
+    ?PURE_DRIVER:start(FsmID, ?MODULE, {ReqId,Bucket,Key,R,Timeout,From,PureOpts}).
 
 %% @private
-init({ReqId,Bucket,Key,R,Timeout,Client,Options}) ->
-    DebugP = proplists:get_value(debug, Options, false),
+init({ReqId,Bucket,Key,R,Timeout,Client,PureOpts}) ->
+    PureP = proplists:get_value(debug, PureOpts, false),
     StateData0 = #state{client=Client,r=R, timeout=Timeout,
                 req_id=ReqId, bkey={Bucket,Key},
-                debug_p=DebugP,options=Options},
-    
+                pure_p=PureP,pure_opts=PureOpts},
     {ok, Ring} = impure_get_my_ring(StateData0),
-    StateData1 = #state{client=Client,r=R, timeout=Timeout,
-                req_id=ReqId, bkey={Bucket,Key}, ring=Ring,
-                debug_p=DebugP,options=Options},
+    StateData1 = StateData0#state{ring=Ring},
     {ok,initialize,StateData1,0}.
 
 
@@ -280,7 +277,7 @@ maybe_finalize_delete(StateData=#state{replied_notfound=NotFound,n=N,
         _ -> nop
     end
     end,
-    if StateData#state.debug_p == false ->
+    if StateData#state.pure_p == false ->
             spawn(F);
        true ->
             F()
@@ -380,26 +377,26 @@ impure_interp(Fun, Arg) when is_function(Fun, 1) ->
 impure_interp(Else, _) ->
     Else.
 
-impure_get_my_ring(#state{debug_p = false}) ->
+impure_get_my_ring(#state{pure_p = false}) ->
     riak_core_ring_manager:get_my_ring();
-impure_get_my_ring(#state{options = Options}) ->
-    {ok, proplists:get_value(get_my_ring, Options)}.
+impure_get_my_ring(#state{pure_opts = Pure_Opts}) ->
+    {ok, proplists:get_value(get_my_ring, Pure_Opts)}.
 
-impure_timer_send_after(#state{debug_p = false}, Timeout) ->
+impure_timer_send_after(#state{pure_p = false}, Timeout) ->
     erlang:send_after(Timeout, self(), timeout);
-impure_timer_send_after(#state{options = Options}, _Timeout) ->
-    proplists:get_value(timer_send_after, Options, dontcare).
+impure_timer_send_after(#state{pure_opts = Pure_Opts}, _Timeout) ->
+    proplists:get_value(timer_send_after, Pure_Opts, dontcare).
 
-impure_riak_core_util_chash_key(#state{debug_p = false}, BKey) ->
+impure_riak_core_util_chash_key(#state{pure_p = false}, BKey) ->
     riak_core_util:chash_key(BKey);
-impure_riak_core_util_chash_key(#state{options = Options}, BKey) ->
+impure_riak_core_util_chash_key(#state{pure_opts = Pure_Opts}, BKey) ->
     Default = <<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0>>,
-    impure_interp(proplists:get_value(chash_key, Options, Default),
+    impure_interp(proplists:get_value(chash_key, Pure_Opts, Default),
                   BKey).
 
-impure_get_bucket(#state{debug_p = false}, Bucket, Ring) ->
+impure_get_bucket(#state{pure_p = false}, Bucket, Ring) ->
     riak_core_bucket:get_bucket(Bucket, Ring);
-impure_get_bucket(#state{options = Options}, Bucket, Ring) ->
+impure_get_bucket(#state{pure_opts = Pure_Opts}, Bucket, Ring) ->
     Default = [{name,Bucket},
                {n_val,2},
                {allow_mult,true},
@@ -419,29 +416,29 @@ impure_get_bucket(#state{options = Options}, Bucket, Ring) ->
                {w,quorum},
                {dw,quorum},
                {rw,quorum}],
-    impure_interp(proplists:get_value(get_bucket, Options, Default),
+    impure_interp(proplists:get_value(get_bucket, Pure_Opts, Default),
                   {Bucket, Ring}).
 
-impure_bang(#state{debug_p = false}, Pid, Msg) ->
+impure_bang(#state{pure_p = false}, Pid, Msg) ->
     Pid ! Msg;
-impure_bang(#state{options = Options}, Client, Msg) ->
-    MyRef = proplists:get_value(my_ref, Options),
+impure_bang(#state{pure_opts = Pure_Opts}, Client, Msg) ->
+    MyRef = proplists:get_value(my_ref, Pure_Opts),
     F = fun({Client1, Msg1}) ->
                 gen_fsm_test_driver:add_trace(MyRef, {bang, Client1, Msg1})
         end,
-    impure_interp(proplists:get_value(bang, Options, F),
+    impure_interp(proplists:get_value(bang, Pure_Opts, F),
                   {Client, Msg}).
 
-impure_riak_core_node_watcher_nodes(#state{debug_p = false}) ->
+impure_riak_core_node_watcher_nodes(#state{pure_p = false}) ->
     riak_core_node_watcher:nodes(riak_kv);
-impure_riak_core_node_watcher_nodes(#state{options = Options}) ->
-    proplists:get_value(node_watcher_nodes, Options, crashme_watcher_nodelist).
+impure_riak_core_node_watcher_nodes(#state{pure_opts = Pure_Opts}) ->
+    proplists:get_value(node_watcher_nodes, Pure_Opts, crashme_watcher_nodelist).
     
-impure_riak_kv_util_try_cast(#state{debug_p = false}, Req, UpNodes, Targets) ->
+impure_riak_kv_util_try_cast(#state{pure_p = false}, Req, UpNodes, Targets) ->
     riak_kv_util:try_cast(Req, UpNodes, Targets);
-impure_riak_kv_util_try_cast(#state{options = Options}, Req, UpNodes, Targets) ->
-    MyRef = proplists:get_value(my_ref, Options),
-    CastTargets = proplists:get_value(cast_targets, Options, [cast_targets_empty]),
+impure_riak_kv_util_try_cast(#state{pure_opts = Pure_Opts}, Req, UpNodes, Targets) ->
+    MyRef = proplists:get_value(my_ref, Pure_Opts),
+    CastTargets = proplists:get_value(cast_targets, Pure_Opts, [cast_targets_empty]),
     %% Return value must be {Sent1, Pangs1}
     F = fun({Req1, UpNodes1, Targets1}) ->
                 gen_fsm_test_driver:add_trace(
@@ -450,48 +447,48 @@ impure_riak_kv_util_try_cast(#state{options = Options}, Req, UpNodes, Targets) -
                   MyRef, {try_cast_to, Nd, Req1}) || Nd <- Targets1],
                 {CastTargets, []}
         end,
-    impure_interp(proplists:get_value(try_cast, Options, F),
+    impure_interp(proplists:get_value(try_cast, Pure_Opts, F),
                   {Req, UpNodes, Targets}).
 
-impure_riak_core_util_moment(#state{debug_p = false}) ->
+impure_riak_core_util_moment(#state{pure_p = false}) ->
     riak_core_util:moment();
-impure_riak_core_util_moment(#state{options = Options}) ->
-    proplists:get_value(moment, Options, fake_moment).
+impure_riak_core_util_moment(#state{pure_opts = Pure_Opts}) ->
+    proplists:get_value(moment, Pure_Opts, fake_moment).
 
-impure_riak_kv_vnode_del(#state{debug_p = false}, IdxNode, BKey, ReqId) ->
+impure_riak_kv_vnode_del(#state{pure_p = false}, IdxNode, BKey, ReqId) ->
     riak_kv_vnode:del(IdxNode, BKey, ReqId);
-impure_riak_kv_vnode_del(#state{options = Options}, IdxNode, BKey, ReqId) ->
-    MyRef = proplists:get_value(my_ref, Options),
+impure_riak_kv_vnode_del(#state{pure_opts = Pure_Opts}, IdxNode, BKey, ReqId) ->
+    MyRef = proplists:get_value(my_ref, Pure_Opts),
     F = fun({IdxNode1, BKey1, ReqId1}) ->
                 gen_fsm_test_driver:add_trace(
                   MyRef, {vnode_del, IdxNode1, BKey1, ReqId1})
         end,
-    impure_interp(proplists:get_value(vnode_del, Options, F),
+    impure_interp(proplists:get_value(vnode_del, Pure_Opts, F),
                   {IdxNode, BKey, ReqId}).
 
-impure_riak_kv_vnode_readrepair(#state{debug_p = false}, IdxFallback, BKey,
-                                FinalRObj, ReqId, StartTime, Options) ->
+impure_riak_kv_vnode_readrepair(#state{pure_p = false}, IdxFallback, BKey,
+                                FinalRObj, ReqId, StartTime, Pure_Opts) ->
     riak_kv_vnode:readrepair(IdxFallback, BKey,
-                             FinalRObj, ReqId, StartTime, Options);
-impure_riak_kv_vnode_readrepair(#state{options = Options}, IdxFallback, BKey,
-                                FinalRObj, ReqId, StartTime, RROptions) ->
-    MyRef = proplists:get_value(my_ref, Options),
-    F = fun({IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RROptions1}) ->
+                             FinalRObj, ReqId, StartTime, Pure_Opts);
+impure_riak_kv_vnode_readrepair(#state{pure_opts = Pure_Opts}, IdxFallback, BKey,
+                                FinalRObj, ReqId, StartTime, RRPure_Opts) ->
+    MyRef = proplists:get_value(my_ref, Pure_Opts),
+    F = fun({IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPure_Opts1}) ->
                 gen_fsm_test_driver:add_trace(
-                  MyRef, {readrepair, IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RROptions1})
+                  MyRef, {readrepair, IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPure_Opts1})
         end,
-    impure_interp(proplists:get_value(vnode_readrepair, Options, F),
-                  {IdxFallback, BKey, FinalRObj, ReqId, StartTime, RROptions}).
+    impure_interp(proplists:get_value(vnode_readrepair, Pure_Opts, F),
+                  {IdxFallback, BKey, FinalRObj, ReqId, StartTime, RRPure_Opts}).
 
-impure_riak_kv_stat_update(#state{debug_p = false}, Name) ->
+impure_riak_kv_stat_update(#state{pure_p = false}, Name) ->
     riak_kv_stat:update(Name);
-impure_riak_kv_stat_update(#state{options = Options}, Name) ->
-    MyRef = proplists:get_value(my_ref, Options),
+impure_riak_kv_stat_update(#state{pure_opts = Pure_Opts}, Name) ->
+    MyRef = proplists:get_value(my_ref, Pure_Opts),
     F = fun({Name1}) ->
                 gen_fsm_test_driver:add_trace(
                   MyRef, {Name1})
         end,
-    impure_interp(proplists:get_value(stat_update, Options, F),
+    impure_interp(proplists:get_value(stat_update, Pure_Opts, F),
                   {Name}).
 
 pure_unanimous() ->
@@ -505,23 +502,23 @@ pure_unanimous() ->
     Ring = chash:fresh(NumParts, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
-    N = 3,
+    N = 2,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
     CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
-    PureOptions = [{debug,true},
-                   {my_ref, Ref},
-                   {get_my_ring, riak_core_ring:fresh(NumParts, SeedNode)},
-                   {timer_send_after, do_not_bother},
-                   %% Use pure get_bucket default (it's a long, tedious list)
-                   {node_watcher_nodes, [SeedNode]},
-                   %% The cast_targets prop is used by the default handler
-                   %% for impurt_riak_kv_util_try_cast, so don't delete it
-                   %% unless you're overriding the try_cast property.
-                   {cast_targets, CastTargets}
-                  ],
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {get_my_ring, riak_core_ring:fresh(NumParts, SeedNode)},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
-                                  5000, fake_client_pid, PureOptions),
+                                  5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, Idx, ReqID}} ||
                  Idx <- Parts],
     X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
@@ -543,23 +540,23 @@ pure_conflict() ->
             riak_object:new(Bucket, Key, Value), ClientID),
     Obj2 = riak_object:increment_vclock(
              riak_object:new(Bucket, Key, <<"other copy sorry">>), <<"booID">>),
-    N = 3,
+    N = 2,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
     CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
-    PureOptions = [{debug,true},
-                   {my_ref, Ref},
-                   {get_my_ring, riak_core_ring:fresh(NumParts, SeedNode)},
-                   {timer_send_after, do_not_bother},
-                   %% Use pure get_bucket default (it's a long, tedious list)
-                   {node_watcher_nodes, [SeedNode]},
-                   %% The cast_targets prop is used by the default handler
-                   %% for impurt_riak_kv_util_try_cast, so don't delete it
-                   %% unless you're overriding the try_cast property.
-                   {cast_targets, CastTargets}
-                  ],
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {get_my_ring, riak_core_ring:fresh(NumParts, SeedNode)},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
-                                  5000, fake_client_pid, PureOptions),
+                                  5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
               {send_event, {r, {ok, Obj2}, lists:nth(2, Parts), ReqID}}],
     X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
@@ -579,23 +576,23 @@ pure_conflict_notfound() ->
     Ring = chash:fresh(NumParts, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
-    N = 3,
+    N = 2,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
     CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
-    PureOptions = [{debug,true},
-                   {my_ref, Ref},
-                   {get_my_ring, riak_core_ring:fresh(NumParts, SeedNode)},
-                   {timer_send_after, do_not_bother},
-                   %% Use pure get_bucket default (it's a long, tedious list)
-                   {node_watcher_nodes, [SeedNode]},
-                   %% The cast_targets prop is used by the default handler
-                   %% for impurt_riak_kv_util_try_cast, so don't delete it
-                   %% unless you're overriding the try_cast property.
-                   {cast_targets, CastTargets}
-                  ],
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {get_my_ring, riak_core_ring:fresh(NumParts, SeedNode)},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
-                                  5000, fake_client_pid, PureOptions),
+                                  5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
               {send_event, {r, {error, notfound}, lists:nth(2, Parts), ReqID}},
               {send_event, {r, {error, notfound}, lists:nth(3, Parts), ReqID}}],
