@@ -23,6 +23,11 @@
 -module(riak_kv_get_fsm).
 -behaviour(gen_fsm).
 -include_lib("riak_kv_vnode.hrl").
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -export([start/6, pure_start/8]).
 -export([init/1, handle_event/3, handle_sync_event/4,
          handle_info/3, terminate/3, code_change/4]).
@@ -576,7 +581,7 @@ pure_conflict_notfound() ->
     Ring = chash:fresh(NumParts, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
-    N = 2,
+    N = 3,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
     CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
@@ -602,3 +607,14 @@ pure_conflict_notfound() ->
      {statedata, ?PURE_DRIVER:get_statedata(Ref)},
      {trace, ?PURE_DRIVER:get_trace(Ref)}].
     
+-ifdef(TEST).
+
+fake_cover_test() ->
+    %% These functions are purely for manual testing/usage demonstration,
+    %% but we ought to execute them once for the coverage report's sake.
+    _ = ?MODULE:pure_unanimous(),
+    _ = ?MODULE:pure_conflict(),
+    _ = ?MODULE:pure_conflict_notfound(),
+    ok.
+
+-endif. % TEST
