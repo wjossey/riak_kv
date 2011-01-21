@@ -32,10 +32,13 @@
 
 -behaviour(gen_fsm).
 -define(DEFAULT_OPTS, [{returnbody, false}, {update_last_modified, true}]).
--export([start/6,start/7]).
+-export([start/6,start/7,start/8,pure_start/9]).
 -export([init/1, handle_event/3, handle_sync_event/4,
          handle_info/3, terminate/3, code_change/4]).
 -export([initialize/2,waiting_vnode_w/2,waiting_vnode_dw/2]).
+
+-define(PURE_DRIVER, gen_fsm_test_driver).
+-export([pure_t0/0]).
 
 -record(state, {robj :: riak_object:riak_object(),
                 client :: {pid(), reference()},
@@ -59,20 +62,47 @@
                 returnbody :: boolean(),
                 resobjs :: list(),
                 allowmult :: boolean(),
-                update_last_modified :: boolean()
+                update_last_modified :: boolean(),
+                pure_p :: boolean(),
+                pure_opts :: list()
                }).
+
+%% Inventory of impure actions:
+%%  x riak_core_ring_manager:get_my_ring().
+%%  x riak_core_bucket:get_bucket()
+%%  x Client !
+%%  x timer:send_after()
+%%  x riak_core_util:moment()
+%%  x riak_core_util:chash_key()
+%%  x riak_core_node_watcher:nodes()
+%%  x riak_kv_util:try_cast()
+%%  x riak_kv_stat:update()
+%%  x riak_kv_js_manager:blocking_dispatch()
+%%  x spawn()
+%%
+%% Impure functions that we know that we use but don't
+%% care about:
+%%  * now()
 
 start(ReqId,RObj,W,DW,Timeout,From) ->
     start(ReqId,RObj,W,DW,Timeout,From,[]).
 
 start(ReqId,RObj,W,DW,Timeout,From,Options) ->
-    gen_fsm:start(?MODULE, [ReqId,RObj,W,DW,Timeout,From,Options], []).
+    start(ReqId,RObj,W,DW,Timeout,From,Options,[]).
+
+start(ReqId,RObj,W,DW,Timeout,From,Options,PureOpts) ->
+    gen_fsm:start(?MODULE, {ReqId,RObj,W,DW,Timeout,From,Options,PureOpts}, []).
+
+pure_start(FsmID, ReqId,RObj,W,DW,Timeout,From,Options,PureOpts) ->
+    ?PURE_DRIVER:start(FsmID, ?MODULE, {ReqId,RObj,W,DW,Timeout,From,Options,PureOpts}).
 
 %% @private
-init([ReqId,RObj0,W0,DW0,Timeout,Client,Options0]) ->
+init({ReqId,RObj0,W0,DW0,Timeout,Client,Options0,PureOpts}) ->
     Options = flatten_options(proplists:unfold(Options0 ++ ?DEFAULT_OPTS), []),
-    {ok,Ring} = riak_core_ring_manager:get_my_ring(),
-    BucketProps = riak_core_bucket:get_bucket(riak_object:bucket(RObj0), Ring),
+    PureP = proplists:get_value(debug, PureOpts, false),
+    StateData0 = #state{pure_p = PureP, pure_opts = PureOpts},
+    {ok, Ring} = impure_get_my_ring(StateData0),
+    BucketProps = impure_get_bucket(StateData0,riak_object:bucket(RObj0),Ring),
     N = proplists:get_value(n_val,BucketProps),
     W = riak_kv_util:expand_rw_value(w, W0, BucketProps, N),
 
@@ -81,21 +111,22 @@ init([ReqId,RObj0,W0,DW0,Timeout,Client,Options0]) ->
 
     case (W > N) or (DW > N) of
         true ->
-            Client ! {ReqId, {error, {n_val_violation, N}}},
+            impure_bang(StateData0, Client,
+                        {ReqId, {error, {n_val_violation, N}}}),
             {stop, normal, none};
         false ->
             AllowMult = proplists:get_value(allow_mult,BucketProps),
             {ok, RClient} = riak:local_client(),
             Bucket = riak_object:bucket(RObj0),
             Key = riak_object:key(RObj0),
-            StateData0 = #state{robj=RObj0, 
+            StateData1 = StateData0#state{robj=RObj0, 
                                 client=Client, w=W, dw=DW, bkey={Bucket, Key},
                                 req_id=ReqId, timeout=Timeout, ring=Ring,
                                 rclient=RClient, 
                                 vnode_options=[],
                                 resobjs=[], allowmult=AllowMult},
-            StateData = handle_options(Options, StateData0),
-            {ok,initialize,StateData,0}
+            StateData2 = handle_options(Options, StateData1),
+            {ok,initialize,StateData2,0}
     end.
 
 %%
@@ -126,7 +157,7 @@ handle_options([{returnbody, true}|T], State) ->
                                   dw=erlang:max(1,State#state.dw),
                                   returnbody=true});
 handle_options([{returnbody, false}|T], State) ->
-    case has_postcommit_hooks(element(1,State#state.bkey)) of
+    case has_postcommit_hooks(element(1,State#state.bkey), State) of
         true ->
             %% We have post-commit hooks, we'll need to get the body back
             %% from the vnode, even though we don't plan to return that to the
@@ -146,19 +177,20 @@ initialize(timeout, StateData0=#state{robj=RObj0, req_id=ReqId, client=Client,
                                       update_last_modified=UpdateLastMod,
                                       timeout=Timeout, ring=Ring, bkey={Bucket,Key}=BKey,
                                       rclient=RClient, vnode_options=VnodeOptions}) ->
-    case invoke_hook(precommit, RClient, update_last_modified(UpdateLastMod, RObj0)) of
+    case invoke_hook(precommit, RClient, update_last_modified(UpdateLastMod, RObj0), StateData0) of
         fail ->
-            Client ! {ReqId, {error, precommit_fail}},
+            impure_bang(StateData0, Client, {ReqId, {error, precommit_fail}}),
             {stop, normal, StateData0};
         {fail, Reason} ->
-            Client ! {ReqId, {error, {precommit_fail, Reason}}},
+            impure_bang(StateData0, Client,
+                        {ReqId, {error, {precommit_fail, Reason}}}),
             {stop, normal, StateData0};
         RObj1 ->
             StartNow = now(),
-            TRef = erlang:send_after(Timeout, self(), timeout),
-            RealStartTime = riak_core_util:moment(),
-            BucketProps = riak_core_bucket:get_bucket(Bucket, Ring),
-            DocIdx = riak_core_util:chash_key({Bucket, Key}),
+            TRef = impure_timer_send_after(StateData0, Timeout),
+            RealStartTime = impure_riak_core_util_moment(StateData0),
+            BucketProps = impure_get_bucket(StateData0, Bucket, Ring),
+            DocIdx = impure_riak_core_util_chash_key(StateData0, {Bucket, Key}),
             Req = ?KV_PUT_REQ{
               bkey = BKey,
               object = RObj1,
@@ -169,8 +201,9 @@ initialize(timeout, StateData0=#state{robj=RObj0, req_id=ReqId, client=Client,
             Preflist = riak_core_ring:preflist(DocIdx, Ring),
             %% TODO: Replace this with call to riak_kv_vnode:put/6
             {Targets, Fallbacks} = lists:split(N, Preflist),
-            UpNodes = riak_core_node_watcher:nodes(riak_kv),
-            {Sent1, Pangs1} = riak_kv_util:try_cast(Req, UpNodes, Targets),
+            UpNodes = impure_riak_core_node_watcher_nodes(StateData0),
+            {Sent1, Pangs1} = impure_riak_kv_util_try_cast(
+                                StateData0, Req, UpNodes, Targets),
             Sent = case length(Sent1) =:= N of   % Sent is [{Index,TargetNode,SentNode}]
                        true -> Sent1;
                        false -> Sent1 ++ riak_kv_util:fallback(Req,UpNodes,Pangs1,Fallbacks)
@@ -190,7 +223,7 @@ waiting_vnode_w({w, Idx, ReqId},
         true ->
             case DW of
                 0 ->
-                    Client ! {ReqId, ok},
+                    impure_bang(StateData, Client, {ReqId, ok}),
                     update_stats(StateData),
                     {stop,normal,StateData};
                 _ ->
@@ -222,12 +255,12 @@ waiting_vnode_w({fail, Idx, ReqId},
             {next_state,waiting_vnode_w,NewStateData};
         false ->
             update_stats(StateData),
-            Client ! {ReqId, {error,too_many_fails}},
+            impure_bang(NewStateData, Client, {ReqId, {error,too_many_fails}}),
             {stop,normal,NewStateData}
     end;
 waiting_vnode_w(timeout, StateData=#state{client=Client,req_id=ReqId}) ->
     update_stats(StateData),
-    Client ! {ReqId, {error,timeout}},
+    impure_bang(StateData, Client, {ReqId, {error,timeout}}),
     {stop,normal,StateData}.
 
 waiting_vnode_dw({w, _Idx, ReqId},
@@ -238,7 +271,7 @@ waiting_vnode_dw({dw, Idx, ReqId},
     Replied = [Idx|Replied0],
     case length(Replied) >= DW of
         true ->
-            Client ! {ReqId, ok},
+            impure_bang(StateData, Client, {ReqId, ok}),
             update_stats(StateData),
             {stop,normal,StateData};
         false ->
@@ -258,8 +291,8 @@ waiting_vnode_dw({dw, Idx, ResObj, ReqId},
                         true  -> {ok, ReplyObj};
                         false -> ok
                     end,
-            Client ! {ReqId, Reply},
-            invoke_hook(postcommit, RClient, ReplyObj),
+            impure_bang(StateData, Client, {ReqId, Reply}),
+            invoke_hook(postcommit, RClient, ReplyObj, StateData),
             update_stats(StateData),
             {stop,normal,StateData};
         false ->
@@ -275,12 +308,12 @@ waiting_vnode_dw({fail, Idx, ReqId},
         true ->
             {next_state,waiting_vnode_dw,NewStateData};
         false ->
-            Client ! {ReqId, {error,too_many_fails}},
+            impure_bang(NewStateData, Client, {ReqId, {error,too_many_fails}}),
             {stop,normal,NewStateData}
     end;
 waiting_vnode_dw(timeout, StateData=#state{client=Client,req_id=ReqId}) ->
     update_stats(StateData),
-    Client ! {ReqId, {error,timeout}},
+    impure_bang(StateData, Client, {ReqId, {error,timeout}}),
     {stop,normal,StateData}.
 
 %% @private
@@ -339,19 +372,15 @@ make_vtag(RObj) ->
     <<HashAsNum:128/integer>> = crypto:md5(term_to_binary(riak_object:vclock(RObj))),
     riak_core_util:integer_to_list(HashAsNum,62).
 
-make_vtag_test() ->
-    Obj = riak_object:new(<<"b">>,<<"k">>,<<"v1">>),
-    ?assertNot(make_vtag(Obj) =:=
-               make_vtag(riak_object:increment_vclock(Obj,<<"client_id">>))).
-
-update_stats(#state{startnow=StartNow}) ->
+update_stats(#state{startnow=StartNow} = StateData) ->
     EndNow = now(),
-    riak_kv_stat:update({put_fsm_time, timer:now_diff(EndNow, StartNow)}).
+    impure_riak_kv_stat_update(StateData, {put_fsm_time, timer:now_diff(EndNow, StartNow)}).
 
 %% Internal functions
-invoke_hook(HookType, RClient, RObj) ->
+invoke_hook(HookType, RClient, RObj, StateData) ->
     Bucket = riak_object:bucket(RObj),
-    BucketProps = RClient:get_bucket(Bucket),
+    BucketProps = impure_get_rclient_bucket(
+                    StateData, RClient, Bucket, StateData#state.ring),
     R = proplists:get_value(HookType, BucketProps, []),
     case R of
         <<"none">> ->
@@ -359,35 +388,35 @@ invoke_hook(HookType, RClient, RObj) ->
         [] ->
             RObj;
         Hooks when is_list(Hooks) ->
-            run_hooks(HookType, RObj, Hooks)
+            run_hooks(HookType, RObj, Hooks, StateData)
     end.
 
-run_hooks(_HookType, RObj, []) ->
+run_hooks(_HookType, RObj, [], _StateData) ->
     RObj;
-run_hooks(HookType, RObj, [{struct, Hook}|T]) ->
+run_hooks(HookType, RObj, [{struct, Hook}|T], StateData) ->
     Mod = proplists:get_value(<<"mod">>, Hook),
     Fun = proplists:get_value(<<"fun">>, Hook),
     JSName = proplists:get_value(<<"name">>, Hook),
-    Result = invoke_hook(HookType, Mod, Fun, JSName, RObj),
+    Result = invoke_hook(HookType, Mod, Fun, JSName, RObj, StateData),
     case HookType of
         precommit ->
             case Result of
                 fail ->
                     Result;
                 _ ->
-                    run_hooks(HookType, Result, T)
+                    run_hooks(HookType, Result, T, StateData)
             end;
         postcommit ->
-            run_hooks(HookType, RObj, T)
+            run_hooks(HookType, RObj, T, StateData)
     end.
 
 
-invoke_hook(precommit, Mod0, Fun0, undefined, RObj) ->
+invoke_hook(precommit, Mod0, Fun0, undefined, RObj, _StateData) ->
     Mod = binary_to_atom(Mod0, utf8),
     Fun = binary_to_atom(Fun0, utf8),
     wrap_hook(Mod, Fun, RObj);
-invoke_hook(precommit, undefined, undefined, JSName, RObj) ->
-    case riak_kv_js_manager:blocking_dispatch(?JSPOOL_HOOK, {{jsfun, JSName}, RObj}, 5) of
+invoke_hook(precommit, undefined, undefined, JSName, RObj, StateData) ->
+    case impure_riak_kv_js_manager_blocking_dispatch(StateData, ?JSPOOL_HOOK, {{jsfun, JSName}, RObj}, 5) of
         {ok, <<"fail">>} ->
             fail;
         {ok, [{<<"fail">>, Message}]} ->
@@ -399,14 +428,17 @@ invoke_hook(precommit, undefined, undefined, JSName, RObj) ->
                                    [Error]),
             fail
     end;
-invoke_hook(postcommit, Mod0, Fun0, undefined, Obj) ->
+invoke_hook(postcommit, Mod0, Fun0, undefined, Obj, #state{pure_p = PureP}) ->
     Mod = binary_to_atom(Mod0, utf8),
     Fun = binary_to_atom(Fun0, utf8),
-    proc_lib:spawn(fun() -> wrap_hook(Mod, Fun, Obj) end);
-invoke_hook(postcommit, undefined, undefined, _JSName, _Obj) ->
+    F = fun() -> wrap_hook(Mod, Fun, Obj) end,
+    if PureP -> F();
+       true  -> proc_lib:spawn(F)
+    end;
+invoke_hook(postcommit, undefined, undefined, _JSName, _Obj, _StateData) ->
     error_logger:warning_msg("Javascript post-commit hooks aren't implemented");
 %% NOP to handle all other cases
-invoke_hook(_, _, _, _, RObj) ->
+invoke_hook(_, _, _, _, RObj, _StateData) ->
     RObj.
 
 wrap_hook(Mod, Fun, Obj)->
@@ -426,5 +458,70 @@ merge_robjs(RObjs0,AllowMult) ->
         _ -> riak_object:reconcile(RObjs1,AllowMult)
     end.
 
-has_postcommit_hooks(Bucket) ->
-    lists:flatten(proplists:get_all_values(postcommit, riak_core_bucket:get_bucket(Bucket))) /= [].
+has_postcommit_hooks(Bucket, StateData) ->
+    lists:flatten(proplists:get_all_values(postcommit, impure_get_bucket(StateData, Bucket, StateData#state.ring))) /= [].
+
+%% Impure handling stuff
+
+impure_get_my_ring(StateData) ->
+    riak_kv_get_fsm:imp_get_my_ring(
+      StateData#state.pure_p, StateData#state.pure_opts).
+
+impure_get_bucket(StateData, Bucket, Ring) ->
+    riak_kv_get_fsm:imp_get_bucket(
+      StateData#state.pure_p, StateData#state.pure_opts, Bucket, Ring).
+
+impure_get_rclient_bucket(#state{pure_p = false}, RClient, Bucket, _Ring) ->
+    RClient:get_bucket(Bucket);
+impure_get_rclient_bucket(StateData, _RClient, Bucket, Ring) ->
+    riak_kv_get_fsm:imp_get_bucket(
+      StateData#state.pure_p, StateData#state.pure_opts, Bucket, Ring).
+
+impure_bang(StateData, Client, Msg) ->
+    riak_kv_get_fsm:imp_bang(
+      StateData#state.pure_p, StateData#state.pure_opts, Client, Msg).
+
+impure_timer_send_after(StateData, Timeout) ->
+    riak_kv_get_fsm:imp_timer_send_after(
+      StateData#state.pure_p, StateData#state.pure_opts, Timeout).
+
+impure_riak_core_util_moment(StateData) ->
+    riak_kv_get_fsm:imp_riak_core_util_moment(
+      StateData#state.pure_p, StateData#state.pure_opts).
+
+impure_riak_core_util_chash_key(StateData, BKey) ->
+    riak_kv_get_fsm:imp_riak_core_util_chash_key(
+      StateData#state.pure_p, StateData#state.pure_opts, BKey).
+
+impure_riak_core_node_watcher_nodes(StateData) ->
+    riak_kv_get_fsm:imp_riak_core_node_watcher_nodes(
+      StateData#state.pure_p, StateData#state.pure_opts).
+
+impure_riak_kv_util_try_cast(StateData, Req, UpNodes, Targets) ->
+    riak_kv_get_fsm:imp_riak_kv_util_try_cast(
+      StateData#state.pure_p, StateData#state.pure_opts, Req, UpNodes, Targets).
+
+impure_riak_kv_stat_update(StateData, Name) ->
+    riak_kv_get_fsm:imp_riak_kv_stat_update(StateData#state.pure_p, StateData#state.pure_opts, Name).
+
+impure_riak_kv_js_manager_blocking_dispatch(#state{pure_p = false}, Hook, Thingie, Int) ->
+    riak_kv_js_manager:blocking_dispatch(Hook, Thingie, Int);
+impure_riak_kv_js_manager_blocking_dispatch(#state{pure_opts = Pure_Opts}, Hook, Thingie, Int) ->
+    Default = {error, "Default not supported by pure interface"},
+    riak_kv_get_fsm:impure_interp(
+      proplists:get_value(js_manager_reply, Pure_Opts, Default),
+      {Hook, Thingie, Int}).
+    
+%%%%%%%%%%
+
+pure_t0() ->
+    todo.
+
+-ifdef(TEST).
+
+make_vtag_test() ->
+    Obj = riak_object:new(<<"b">>,<<"k">>,<<"v1">>),
+    ?assertNot(make_vtag(Obj) =:=
+               make_vtag(riak_object:increment_vclock(Obj,<<"client_id">>))).
+
+-endif. % TEST

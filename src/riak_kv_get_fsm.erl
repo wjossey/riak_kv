@@ -38,11 +38,11 @@
 -export([pure_unanimous/0, pure_conflict/0, pure_conflict_notfound/0]).
 
 %% For internal API use only (e.g. sharing common funcs with other FSMs)
--export([imp_get_my_ring/1, imp_get_bucket/3, imp_bang/3,
-         imp_timer_send_after/2, imp_riak_core_util_moment/1,
-         imp_riak_core_util_chash_key/2,
-         imp_riak_core_node_watcher_nodes/1,
-         imp_riak_kv_util_try_cast/4, imp_riak_kv_stat_update/2,
+-export([imp_get_my_ring/2, imp_get_bucket/4, imp_bang/4,
+         imp_timer_send_after/3, imp_riak_core_util_moment/2,
+         imp_riak_core_util_chash_key/3,
+         imp_riak_core_node_watcher_nodes/2,
+         imp_riak_kv_util_try_cast/5, imp_riak_kv_stat_update/3,
          imp_interp/2]).
 
 -record(state, {client :: {pid(), reference()},
@@ -386,31 +386,46 @@ update_stats(#state{startnow=StartNow} = StateData) ->
 
 %% Impure handling stuff
 
-impure_interp(Fun, Arg) when is_function(Fun, 1) ->
+imp_interp(Fun, Arg) when is_function(Fun, 1) ->
     Fun(Arg);
-impure_interp(Else, _) ->
+imp_interp(Else, _) ->
     Else.
 
-impure_get_my_ring(#state{pure_p = false}) ->
+impure_get_my_ring(StateData) ->
+    imp_get_my_ring(StateData#state.pure_p, StateData#state.pure_opts).
+
+imp_get_my_ring(false, _PureOpts) ->
     riak_core_ring_manager:get_my_ring();
-impure_get_my_ring(#state{pure_opts = PureOpts}) ->
+imp_get_my_ring(true, PureOpts) ->
     {ok, proplists:get_value(get_my_ring, PureOpts)}.
 
-impure_timer_send_after(#state{pure_p = false}, Timeout) ->
+impure_timer_send_after(StateData, Timeout) ->
+    imp_timer_send_after(StateData#state.pure_p, StateData#state.pure_opts,
+                         Timeout).
+
+imp_timer_send_after(false, _PureOpts, Timeout) ->
     erlang:send_after(Timeout, self(), timeout);
-impure_timer_send_after(#state{pure_opts = PureOpts}, _Timeout) ->
+imp_timer_send_after(true, PureOpts, _Timeout) ->
     proplists:get_value(timer_send_after, PureOpts, dontcare).
 
-impure_riak_core_util_chash_key(#state{pure_p = false}, BKey) ->
-    riak_core_util:chash_key(BKey);
-impure_riak_core_util_chash_key(#state{pure_opts = PureOpts}, BKey) ->
-    Default = <<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0>>,
-    impure_interp(proplists:get_value(chash_key, PureOpts, Default),
-                  BKey).
+impure_riak_core_util_chash_key(StateData, BKey) ->
+    imp_riak_core_util_chash_key(StateData#state.pure_p, StateData#state.pure_opts,
+                                    BKey).
 
-impure_get_bucket(#state{pure_p = false}, Bucket, Ring) ->
+imp_riak_core_util_chash_key(false, _PureOpts, BKey) ->
+    riak_core_util:chash_key(BKey);
+imp_riak_core_util_chash_key(true, PureOpts, BKey) ->
+    Default = <<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0>>,
+    imp_interp(proplists:get_value(chash_key, PureOpts, Default),
+               BKey).
+
+impure_get_bucket(StateData, Bucket, Ring) ->
+    imp_get_bucket(StateData#state.pure_p, StateData#state.pure_opts,
+                   Bucket, Ring).
+
+imp_get_bucket(false, _PureOpts, Bucket, Ring) ->
     riak_core_bucket:get_bucket(Bucket, Ring);
-impure_get_bucket(#state{pure_opts = PureOpts}, Bucket, Ring) ->
+imp_get_bucket(true, PureOpts, Bucket, Ring) ->
     Default = [{name,Bucket},
                {n_val,2},
                {allow_mult,true},
@@ -430,27 +445,38 @@ impure_get_bucket(#state{pure_opts = PureOpts}, Bucket, Ring) ->
                {w,quorum},
                {dw,quorum},
                {rw,quorum}],
-    impure_interp(proplists:get_value(get_bucket, PureOpts, Default),
-                  {Bucket, Ring}).
+    imp_interp(proplists:get_value(get_bucket, PureOpts, Default),
+               {Bucket, Ring}).
 
-impure_bang(#state{pure_p = false}, Pid, Msg) ->
+impure_bang(StateData, Pid, Msg) ->
+    imp_bang(StateData#state.pure_p, StateData#state.pure_opts,
+             Pid, Msg).
+
+imp_bang(false, _PureOpts, Pid, Msg) ->
     Pid ! Msg;
-impure_bang(#state{pure_opts = PureOpts}, Client, Msg) ->
+imp_bang(true, PureOpts, Client, Msg) ->
     MyRef = proplists:get_value(my_ref, PureOpts),
     F = fun({Client1, Msg1}) ->
                 gen_fsm_test_driver:add_trace(MyRef, {bang, Client1, Msg1})
         end,
-    impure_interp(proplists:get_value(bang, PureOpts, F),
-                  {Client, Msg}).
+    imp_interp(proplists:get_value(bang, PureOpts, F),
+               {Client, Msg}).
 
-impure_riak_core_node_watcher_nodes(#state{pure_p = false}) ->
+impure_riak_core_node_watcher_nodes(StateData) ->
+    imp_riak_core_node_watcher_nodes(StateData#state.pure_p, StateData#state.pure_opts).
+
+imp_riak_core_node_watcher_nodes(false, _PureOpts) ->
     riak_core_node_watcher:nodes(riak_kv);
-impure_riak_core_node_watcher_nodes(#state{pure_opts = PureOpts}) ->
+imp_riak_core_node_watcher_nodes(true, PureOpts) ->
     proplists:get_value(node_watcher_nodes, PureOpts, crashme_watcher_nodelist).
     
-impure_riak_kv_util_try_cast(#state{pure_p = false}, Req, UpNodes, Targets) ->
+impure_riak_kv_util_try_cast(StateData, Req, UpNodes, Targets) ->
+    imp_riak_kv_util_try_cast(StateData#state.pure_p, StateData#state.pure_opts,
+                                 Req, UpNodes, Targets).
+
+imp_riak_kv_util_try_cast(false, _PureOpts, Req, UpNodes, Targets) ->
     riak_kv_util:try_cast(Req, UpNodes, Targets);
-impure_riak_kv_util_try_cast(#state{pure_opts = PureOpts}, Req, UpNodes, Targets) ->
+imp_riak_kv_util_try_cast(true, PureOpts, Req, UpNodes, Targets) ->
     MyRef = proplists:get_value(my_ref, PureOpts),
     CastTargets = proplists:get_value(cast_targets, PureOpts, [cast_targets_empty]),
     %% Return value must be {Sent1, Pangs1}
@@ -461,12 +487,15 @@ impure_riak_kv_util_try_cast(#state{pure_opts = PureOpts}, Req, UpNodes, Targets
                   MyRef, {try_cast_to, Nd, Req1}) || Nd <- Targets1],
                 {CastTargets, []}
         end,
-    impure_interp(proplists:get_value(try_cast, PureOpts, F),
-                  {Req, UpNodes, Targets}).
+    imp_interp(proplists:get_value(try_cast, PureOpts, F),
+               {Req, UpNodes, Targets}).
 
-impure_riak_core_util_moment(#state{pure_p = false}) ->
+impure_riak_core_util_moment(StateData) ->
+    imp_riak_core_util_moment(StateData#state.pure_p, StateData#state.pure_opts).
+
+imp_riak_core_util_moment(false, _PureOpts) ->
     riak_core_util:moment();
-impure_riak_core_util_moment(#state{pure_opts = PureOpts}) ->
+imp_riak_core_util_moment(true, PureOpts) ->
     proplists:get_value(moment, PureOpts, fake_moment).
 
 impure_riak_kv_vnode_del(#state{pure_p = false}, IdxNode, BKey, ReqId) ->
@@ -477,8 +506,8 @@ impure_riak_kv_vnode_del(#state{pure_opts = PureOpts}, IdxNode, BKey, ReqId) ->
                 gen_fsm_test_driver:add_trace(
                   MyRef, {vnode_del, IdxNode1, BKey1, ReqId1})
         end,
-    impure_interp(proplists:get_value(vnode_del, PureOpts, F),
-                  {IdxNode, BKey, ReqId}).
+    imp_interp(proplists:get_value(vnode_del, PureOpts, F),
+               {IdxNode, BKey, ReqId}).
 
 impure_riak_kv_vnode_readrepair(#state{pure_p = false}, IdxFallback, BKey,
                                 FinalRObj, ReqId, StartTime, PureOpts) ->
@@ -491,19 +520,23 @@ impure_riak_kv_vnode_readrepair(#state{pure_opts = PureOpts}, IdxFallback, BKey,
                 gen_fsm_test_driver:add_trace(
                   MyRef, {readrepair, IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPureOpts1})
         end,
-    impure_interp(proplists:get_value(vnode_readrepair, PureOpts, F),
-                  {IdxFallback, BKey, FinalRObj, ReqId, StartTime, RRPureOpts}).
+    imp_interp(proplists:get_value(vnode_readrepair, PureOpts, F),
+               {IdxFallback, BKey, FinalRObj, ReqId, StartTime, RRPureOpts}).
 
-impure_riak_kv_stat_update(#state{pure_p = false}, Name) ->
+impure_riak_kv_stat_update(StateData, Name) ->
+    imp_riak_kv_stat_update(StateData#state.pure_p, StateData#state.pure_opts,
+                            Name).
+
+imp_riak_kv_stat_update(false, _PureOpts, Name) ->
     riak_kv_stat:update(Name);
-impure_riak_kv_stat_update(#state{pure_opts = PureOpts}, Name) ->
+imp_riak_kv_stat_update(true, PureOpts, Name) ->
     MyRef = proplists:get_value(my_ref, PureOpts),
     F = fun({Name1}) ->
                 gen_fsm_test_driver:add_trace(
                   MyRef, {Name1})
         end,
-    impure_interp(proplists:get_value(stat_update, PureOpts, F),
-                  {Name}).
+    imp_interp(proplists:get_value(stat_update, PureOpts, F),
+               {Name}).
 
 pure_unanimous() ->
     Ref = ref0,
