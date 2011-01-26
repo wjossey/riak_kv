@@ -36,7 +36,7 @@
 %% For demo/explanatory purposes
 -define(PURE_DRIVER, gen_fsm_test_driver).
 -export([pure_unanimous/0, pure_conflict/0, pure_conflict_notfound/0,
-         pure_1notfound_2ok_diff_objs/0]).
+         pure_1notfound_2ok_diff_objs/0, pure_1notfound_2ok_diff_objs2/0]).
 
 %% For internal API use only (e.g. sharing common funcs with other FSMs)
 -export([imp_get_my_ring/2, imp_get_bucket/4, imp_bang/4,
@@ -701,6 +701,52 @@ pure_1notfound_2ok_diff_objs() ->
     Events = [{send_event, {r, {error, notfound}, lists:nth(1, Parts), ReqID}},
               {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
               %%{send_event, {r, {error, notfound}, lists:nth(3, Parts), ReqID}}],
+              {send_event, {r, {ok, Obj2}, lists:nth(3, Parts), ReqID}}],
+    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    [{res, X},
+     {state, ?PURE_DRIVER:get_state(Ref)},
+     {statedata, ?PURE_DRIVER:get_statedata(Ref)},
+     {trace, ?PURE_DRIVER:get_trace(Ref)}].
+
+pure_1notfound_2ok_diff_objs2() ->
+    Ref = ref0,
+    ReqID = req1,
+    NumParts = 8, SeedNode = r1@node,
+    %% B & K not really used for hashing in pure form: they're only filler
+    Bucket = <<"b">>,
+    Key = <<"k">>, 
+    Value = <<"42!">>,
+    ClientID = <<"clientID1">>,
+    %% Ring = chash:fresh(NumParts, SeedNode),
+    Ring = {NumParts, [{Foo, SeedNode} || Foo <- lists:seq(100+1, 100+NumParts)]},
+    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % Ugly hack but need it
+    Obj = riak_object:increment_vclock(
+            riak_object:new(Bucket, Key, Value), ClientID),
+    Obj2 = riak_object:increment_vclock(Obj, ClientID),
+    N = 3,
+    R = 2,
+    Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
+    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
+
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {get_my_ring, ChState},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
+    InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
+                                  5000, fake_client_pid, PureOpts),
+    %% Won't work: read-repair barfs.
+    %% Events = [{send_event, {r, {error, notfound}, 6666, ReqID}},
+    %%           {send_event, {r, {ok, Obj},         6677, ReqID}},
+    %%           {send_event, {r, {error, notfound}, 6688, ReqID}}],
+    Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
+              {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
               {send_event, {r, {ok, Obj2}, lists:nth(3, Parts), ReqID}}],
     X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
     [{res, X},
