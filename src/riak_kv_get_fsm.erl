@@ -659,6 +659,21 @@ make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval = PI,
               CastTargets = [{Idx, Nd, Nd} || {Idx, Nd} <- Targets1],
               {CastTargets, []}
       end},
+     {{riak_core_util, moment}, a_fake_moment},
+     {{riak_kv_vnode, del},
+      fun([Idx, BKey, ReqId]) ->
+              gen_fsm_test_driver:add_trace(
+                FsmID, {vnode_del, Idx, BKey, ReqId})
+      end},
+     {{riak_kv_vnode, readrepair},
+      fun([IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPureOpts1]) ->
+              gen_fsm_test_driver:add_trace(
+                FsmID, {readrepair, IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPureOpts1})
+      end},
+     {{riak_kv_stat, update},
+      fun([Name1]) ->
+              gen_fsm_test_driver:add_trace(FsmID, Name1)
+      end},
      {{erlang, '!'},
       fun([To, Msg]) ->
               ?PURE_DRIVER:add_trace(FsmID, {'!', To, Msg})
