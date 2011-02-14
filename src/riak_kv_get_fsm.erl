@@ -406,7 +406,7 @@ pure_unanimous() ->
                                   5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, Idx, ReqID}} ||
                  Idx <- Parts],
-    {stopped, normal, _state, _extra_events} = X =
+    {stopped, normal, _state, _extra_events = []} = X =
         ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
     [{res, X},
      {state, ?PURE_DRIVER:get_state(Ref)},
@@ -452,26 +452,15 @@ pure_conflict_notfound() ->
     Value = <<"42!">>,
     ClientID = <<"clientID1">>,
     %% Ring = chash:fresh(NumParts, SeedNode),
-    Ring = {NumParts, [{Foo, SeedNode} || Foo <- lists:seq(1, NumParts)]},
-    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % Ugly hack but need it
+    Ring = riak_kv_util:fresh_test_ring(NumParts, 42, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
     N = 3,
     R = quorum,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
-    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
-    PureOpts = [{debug,true},
-                {my_ref, Ref},
-                {get_my_ring, ChState},
-                {timer_send_after, do_not_bother},
-                %% Use pure get_bucket default (it's a long, tedious list)
-                {node_watcher_nodes, [SeedNode]},
-                %% The cast_targets prop is used by the default handler
-                %% for impurt_riak_kv_util_try_cast, so don't delete it
-                %% unless you're overriding the try_cast property.
-                {cast_targets, CastTargets}
-               ],
+    PureOpts = [] ++
+        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
                                   5000, fake_client_pid, PureOpts),
     %% Won't work: read-repair barfs.
@@ -481,7 +470,8 @@ pure_conflict_notfound() ->
     Events = [{send_event, {r, {error, notfound}, lists:nth(1, Parts), ReqID}},
               {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
               {send_event, {r, {error, notfound}, lists:nth(3, Parts), ReqID}}],
-    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    {stopped, normal, _state, _extra_events = []} = X =
+        ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
     [{res, X},
      {state, ?PURE_DRIVER:get_state(Ref)},
      {statedata, ?PURE_DRIVER:get_statedata(Ref)},
@@ -496,9 +486,7 @@ pure_1notfound_2ok_diff_objs() ->
     Key = <<"k">>, 
     Value = <<"42!">>,
     ClientID = <<"clientID1">>,
-    %% Ring = chash:fresh(NumParts, SeedNode),
-    Ring = {NumParts, [{Foo, SeedNode} || Foo <- lists:seq(100+1, 100+NumParts)]},
-    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % Ugly hack but need it
+    Ring = riak_kv_util:fresh_test_ring(NumParts, 42, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
     Obj2 = riak_object:increment_vclock(
@@ -506,19 +494,9 @@ pure_1notfound_2ok_diff_objs() ->
     N = 3,
     R = 1,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
-    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
-    PureOpts = [{debug,true},
-                {my_ref, Ref},
-                {get_my_ring, ChState},
-                {timer_send_after, do_not_bother},
-                %% Use pure get_bucket default (it's a long, tedious list)
-                {node_watcher_nodes, [SeedNode]},
-                %% The cast_targets prop is used by the default handler
-                %% for impurt_riak_kv_util_try_cast, so don't delete it
-                %% unless you're overriding the try_cast property.
-                {cast_targets, CastTargets}
-               ],
+    PureOpts = [] ++
+        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
                                   5000, fake_client_pid, PureOpts),
     %% Won't work: read-repair barfs.
@@ -529,7 +507,8 @@ pure_1notfound_2ok_diff_objs() ->
               {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
               %%{send_event, {r, {error, notfound}, lists:nth(3, Parts), ReqID}}],
               {send_event, {r, {ok, Obj2}, lists:nth(3, Parts), ReqID}}],
-    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    {stopped, normal, _state, _extra_events = []} = X =
+        ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
     [{res, X},
      {state, ?PURE_DRIVER:get_state(Ref)},
      {statedata, ?PURE_DRIVER:get_statedata(Ref)},
@@ -544,28 +523,16 @@ pure_1notfound_2ok_diff_objs2() ->
     Key = <<"k">>, 
     Value = <<"42!">>,
     ClientID = <<"clientID1">>,
-    %% Ring = chash:fresh(NumParts, SeedNode),
-    Ring = {NumParts, [{Foo, SeedNode} || Foo <- lists:seq(100+1, 100+NumParts)]},
-    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % Ugly hack but need it
+    Ring = riak_kv_util:fresh_test_ring(NumParts, 42, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
     Obj2 = riak_object:increment_vclock(Obj, ClientID),
     N = 3,
     R = 2,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
-    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
-    PureOpts = [{debug,true},
-                {my_ref, Ref},
-                {get_my_ring, ChState},
-                {timer_send_after, do_not_bother},
-                %% Use pure get_bucket default (it's a long, tedious list)
-                {node_watcher_nodes, [SeedNode]},
-                %% The cast_targets prop is used by the default handler
-                %% for impurt_riak_kv_util_try_cast, so don't delete it
-                %% unless you're overriding the try_cast property.
-                {cast_targets, CastTargets}
-               ],
+    PureOpts = [] ++
+        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
                                   5000, fake_client_pid, PureOpts),
     %% Won't work: read-repair barfs.
@@ -575,7 +542,8 @@ pure_1notfound_2ok_diff_objs2() ->
     Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
               {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
               {send_event, {r, {ok, Obj2}, lists:nth(3, Parts), ReqID}}],
-    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    {stopped, normal, _state, _extra_events = []} = X =
+        ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
     [{res, X},
      {state, ?PURE_DRIVER:get_state(Ref)},
      {statedata, ?PURE_DRIVER:get_statedata(Ref)},
@@ -621,7 +589,7 @@ make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval,
      {my_ref, FsmID},
      {{erlang, node}, SeedNode},
      {{riak_core_ring_manager, get_my_ring}, {ok, ChState}},
-     {{riak_core_node_watcher, node_watcher_nodes}, [SeedNode]},
+     {{riak_core_node_watcher, nodes}, [SeedNode]},
      {{riak_core_bucket, get_bucket}, default_bucket_props(Bucket)},
      {timer_send_after, do_not_bother},
      {{riak_core_util, chash_key},
