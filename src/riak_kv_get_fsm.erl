@@ -393,7 +393,7 @@ pure_unanimous() ->
     Key = <<"k">>,
     Value = <<"42!">>,
     ClientID = <<"clientID1">>,
-    Ring = chash:fresh(NumParts, SeedNode),
+    Ring = riak_kv_util:fresh_test_ring(NumParts, 42, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
     N = 3,
@@ -615,26 +615,16 @@ make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval, Bucket) ->
     make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval,
                            Bucket, []).
 
-make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval = PI,
+make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval,
                        Bucket, Opts)
   when PartitionInterval > 0 ->
-    RingL0 = [{Idx, SeedNode} ||
-                 Idx <- lists:seq(0, (NumParts*PI) - 1, PI)],
-    RingL = case proplists:get_value(partition_owners, Opts) of
+    Ring0 = riak_kv_util:fresh_test_ring(NumParts, PartitionInterval, SeedNode),
+    Ring = case proplists:get_value(partition_owners, Opts) of
                undefined ->
-                   RingL0;
+                   Ring0;
                Others ->
-                   lists:map(
-                     fun({Part, _Node} = PN) ->
-                             case proplists:get_value(Part, Others) of
-                                 undefined ->
-                                     PN;
-                                 NewNode ->
-                                     {Part, NewNode}
-                             end
-                     end, RingL0)
+                   riak_kv_util:subst_test_ring_owners(Ring0, Others)
            end,
-    Ring = {NumParts, RingL},
     ChState = {chstate, SeedNode, [], Ring, dict:new()}, % ugly hack
     [{debug, true},
      {my_ref, FsmID},
