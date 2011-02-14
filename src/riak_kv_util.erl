@@ -31,7 +31,9 @@
          fallback/4,
          expand_rw_value/4,
          normalize_rw_value/2,
-         make_request/2]).
+         make_request/2,
+         fresh_test_ring/3,
+         subst_test_ring_owners/2]).
 
 -include_lib("riak_kv_vnode.hrl").
 
@@ -133,6 +135,22 @@ normalize_rw_value(one, _N) -> 1;
 normalize_rw_value(quorum, N) -> erlang:trunc((N/2)+1);
 normalize_rw_value(all, N) -> N.
 
+fresh_test_ring(NumParts, _PartitionInterval = PI, SeedNode) ->
+    RingL = [{Idx, SeedNode} ||
+                Idx <- lists:seq(0, (NumParts*PI) - 1, PI)],
+    {NumParts, RingL}.
+
+subst_test_ring_owners({NumParts, Ring0}, NewOwnerList) ->
+    Ring = lists:map(
+             fun({Part, _Node} = PN) ->
+                     case proplists:get_value(Part, NewOwnerList) of
+                         undefined ->
+                             PN;
+                         NewNode ->
+                             {Part, NewNode}
+                     end
+             end, Ring0),
+    {NumParts, Ring}.
 
 %% ===================================================================
 %% EUnit tests
