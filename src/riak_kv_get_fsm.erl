@@ -35,6 +35,8 @@
 
 %% For demo/explanatory purposes
 -define(PURE_DRIVER, gen_fsm_test_driver).
+-export([pure_unanimous/0, pure_conflict/0, pure_conflict_notfound/0,
+         pure_1notfound_2ok_diff_objs/0, pure_1notfound_2ok_diff_objs2/0]).
 
 -record(state, {client :: {pid(), reference()},
                 n :: pos_integer(), 
@@ -382,3 +384,310 @@ impure(#state{pure_opts = PureOpts}, {mod, _Mod}, Func, ArgList) ->
     imp_interp(proplists:get_value({mod, Func}, PureOpts), ArgList);
 impure(#state{pure_opts = PureOpts}, Mod, Func, ArgList) ->
     imp_interp(proplists:get_value({Mod, Func}, PureOpts), ArgList).
+
+pure_unanimous() ->
+    Ref = ref0,
+    ReqID = req1,
+    NumParts = 8, SeedNode = r1@node,
+    Bucket = <<"b">>,
+    Key = <<"k">>,
+    Value = <<"42!">>,
+    ClientID = <<"clientID1">>,
+    Ring = chash:fresh(NumParts, SeedNode),
+    Obj = riak_object:increment_vclock(
+            riak_object:new(Bucket, Key, Value), ClientID),
+    N = 3,
+    Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
+
+    PureOpts = [
+               ] ++
+        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
+    InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
+                                  5000, fake_client_pid, PureOpts),
+    Events = [{send_event, {r, {ok, Obj}, Idx, ReqID}} ||
+                 Idx <- Parts],
+    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    [{res, X},
+     {state, ?PURE_DRIVER:get_state(Ref)},
+     {statedata, ?PURE_DRIVER:get_statedata(Ref)},
+     {trace, ?PURE_DRIVER:get_trace(Ref)}].
+    
+pure_conflict() ->
+    Ref = ref0,
+    ReqID = req1,
+    NumParts = 8, SeedNode = r1@node,
+    Bucket = <<"b">>,
+    Key = <<"k">>,
+    Value = <<"42!">>,
+    ClientID = <<"clientID1">>,
+    Ring = chash:fresh(NumParts, SeedNode),
+    Obj = riak_object:increment_vclock(
+            riak_object:new(Bucket, Key, Value), ClientID),
+    Obj2 = riak_object:increment_vclock(
+             riak_object:new(Bucket, Key, <<"other copy sorry">>), <<"booID">>),
+    N = 3,
+    Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
+    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
+
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {{riak_core_ring_manager, get_my_ring},
+                 {ok, riak_core_ring:fresh(NumParts, SeedNode)}},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
+    InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
+                                  5000, fake_client_pid, PureOpts),
+    Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
+              {send_event, {r, {ok, Obj2}, lists:nth(2, Parts), ReqID}}],
+    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    [{res, X},
+     {state, ?PURE_DRIVER:get_state(Ref)},
+     {statedata, ?PURE_DRIVER:get_statedata(Ref)},
+     {trace, ?PURE_DRIVER:get_trace(Ref)}].
+    
+pure_conflict_notfound() ->
+    Ref = ref0,
+    ReqID = req1,
+    NumParts = 8, SeedNode = r1@node,
+    %% B & K not really used for hashing in pure form: they're only filler
+    Bucket = <<"b">>,
+    Key = <<"k">>, 
+    Value = <<"42!">>,
+    ClientID = <<"clientID1">>,
+    %% Ring = chash:fresh(NumParts, SeedNode),
+    Ring = {NumParts, [{Foo, SeedNode} || Foo <- lists:seq(1, NumParts)]},
+    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % Ugly hack but need it
+    Obj = riak_object:increment_vclock(
+            riak_object:new(Bucket, Key, Value), ClientID),
+    N = 3,
+    R = quorum,
+    Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
+    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
+
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {get_my_ring, ChState},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
+    InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
+                                  5000, fake_client_pid, PureOpts),
+    %% Won't work: read-repair barfs.
+    %% Events = [{send_event, {r, {error, notfound}, 6666, ReqID}},
+    %%           {send_event, {r, {ok, Obj},         6677, ReqID}},
+    %%           {send_event, {r, {error, notfound}, 6688, ReqID}}],
+    Events = [{send_event, {r, {error, notfound}, lists:nth(1, Parts), ReqID}},
+              {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
+              {send_event, {r, {error, notfound}, lists:nth(3, Parts), ReqID}}],
+    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    [{res, X},
+     {state, ?PURE_DRIVER:get_state(Ref)},
+     {statedata, ?PURE_DRIVER:get_statedata(Ref)},
+     {trace, ?PURE_DRIVER:get_trace(Ref)}].
+    
+pure_1notfound_2ok_diff_objs() ->
+    Ref = ref0,
+    ReqID = req1,
+    NumParts = 8, SeedNode = r1@node,
+    %% B & K not really used for hashing in pure form: they're only filler
+    Bucket = <<"b">>,
+    Key = <<"k">>, 
+    Value = <<"42!">>,
+    ClientID = <<"clientID1">>,
+    %% Ring = chash:fresh(NumParts, SeedNode),
+    Ring = {NumParts, [{Foo, SeedNode} || Foo <- lists:seq(100+1, 100+NumParts)]},
+    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % Ugly hack but need it
+    Obj = riak_object:increment_vclock(
+            riak_object:new(Bucket, Key, Value), ClientID),
+    Obj2 = riak_object:increment_vclock(
+             riak_object:new(Bucket, Key, <<"other copy sorry">>), <<"booID">>),
+    N = 3,
+    R = 1,
+    Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
+    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
+
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {get_my_ring, ChState},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
+    InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
+                                  5000, fake_client_pid, PureOpts),
+    %% Won't work: read-repair barfs.
+    %% Events = [{send_event, {r, {error, notfound}, 6666, ReqID}},
+    %%           {send_event, {r, {ok, Obj},         6677, ReqID}},
+    %%           {send_event, {r, {error, notfound}, 6688, ReqID}}],
+    Events = [{send_event, {r, {error, notfound}, lists:nth(1, Parts), ReqID}},
+              {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
+              %%{send_event, {r, {error, notfound}, lists:nth(3, Parts), ReqID}}],
+              {send_event, {r, {ok, Obj2}, lists:nth(3, Parts), ReqID}}],
+    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    [{res, X},
+     {state, ?PURE_DRIVER:get_state(Ref)},
+     {statedata, ?PURE_DRIVER:get_statedata(Ref)},
+     {trace, ?PURE_DRIVER:get_trace(Ref)}].
+
+pure_1notfound_2ok_diff_objs2() ->
+    Ref = ref0,
+    ReqID = req1,
+    NumParts = 8, SeedNode = r1@node,
+    %% B & K not really used for hashing in pure form: they're only filler
+    Bucket = <<"b">>,
+    Key = <<"k">>, 
+    Value = <<"42!">>,
+    ClientID = <<"clientID1">>,
+    %% Ring = chash:fresh(NumParts, SeedNode),
+    Ring = {NumParts, [{Foo, SeedNode} || Foo <- lists:seq(100+1, 100+NumParts)]},
+    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % Ugly hack but need it
+    Obj = riak_object:increment_vclock(
+            riak_object:new(Bucket, Key, Value), ClientID),
+    Obj2 = riak_object:increment_vclock(Obj, ClientID),
+    N = 3,
+    R = 2,
+    Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
+    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
+
+    PureOpts = [{debug,true},
+                {my_ref, Ref},
+                {get_my_ring, ChState},
+                {timer_send_after, do_not_bother},
+                %% Use pure get_bucket default (it's a long, tedious list)
+                {node_watcher_nodes, [SeedNode]},
+                %% The cast_targets prop is used by the default handler
+                %% for impurt_riak_kv_util_try_cast, so don't delete it
+                %% unless you're overriding the try_cast property.
+                {cast_targets, CastTargets}
+               ],
+    InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
+                                  5000, fake_client_pid, PureOpts),
+    %% Won't work: read-repair barfs.
+    %% Events = [{send_event, {r, {error, notfound}, 6666, ReqID}},
+    %%           {send_event, {r, {ok, Obj},         6677, ReqID}},
+    %%           {send_event, {r, {error, notfound}, 6688, ReqID}}],
+    Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
+              {send_event, {r, {ok, Obj}, lists:nth(2, Parts), ReqID}},
+              {send_event, {r, {ok, Obj2}, lists:nth(3, Parts), ReqID}}],
+    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    [{res, X},
+     {state, ?PURE_DRIVER:get_state(Ref)},
+     {statedata, ?PURE_DRIVER:get_statedata(Ref)},
+     {trace, ?PURE_DRIVER:get_trace(Ref)}].
+    
+default_bucket_props(Bucket) ->
+    [{name,Bucket},
+     {n_val,3},
+     {allow_mult,true},
+     {last_write_wins,false},
+     {big_vclock,1000},
+     {young_vclock,-1},
+     {precommit,[]},
+     {postcommit,[]},
+     {chash_keyfun,{riak_core_util,chash_std_keyfun}},
+     {linkfun,{modfun,riak_kv_wm_link_walker,mapreduce_linkfun}},
+     {linkfun,{modfun,riak_kv_wm_link_walker,mapreduce_linkfun}},
+     {old_vclock,86400},
+     {young_vclock,20},
+     {big_vclock,50},
+     {small_vclock,10},
+     {r,quorum},
+     {w,quorum},
+     {dw,quorum},
+     {rw,quorum}].
+
+make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval, Bucket) ->
+    make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval,
+                           Bucket, []).
+
+make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval = PI,
+                       Bucket, Opts)
+  when PartitionInterval > 0 ->
+    RingL0 = [{Idx, SeedNode} ||
+                 Idx <- lists:seq(0, (NumParts*PI) - 1, PI)],
+    RingL = case proplists:get_value(partition_owners, Opts) of
+               undefined ->
+                   RingL0;
+               Others ->
+                   lists:map(
+                     fun({Part, _Node} = PN) ->
+                             case proplists:get_value(Part, Others) of
+                                 undefined ->
+                                     PN;
+                                 NewNode ->
+                                     {Part, NewNode}
+                             end
+                     end, RingL0)
+           end,
+    Ring = {NumParts, RingL},
+    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % ugly hack
+    [{debug, true},
+     {my_ref, FsmID},
+     {{erlang, node}, SeedNode},
+     {{riak_core_ring_manager, get_my_ring}, {ok, ChState}},
+     {{riak_core_node_watcher, node_watcher_nodes}, [SeedNode]},
+     {{riak_core_bucket, get_bucket}, default_bucket_props(Bucket)},
+     {timer_send_after, do_not_bother},
+     {{riak_core_util, chash_key},
+      fun(_) ->
+              %% This magic hash will always use a preflist
+              %% that is exactly equal to the ring's list
+              %% of partitions.
+              <<255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255>>
+      end},
+     {{riak_kv_util, try_cast},
+      fun([Req1, UpNodes1, Targets1]) ->
+              gen_fsm_test_driver:add_trace(
+                FsmID, {try_cast, UpNodes1, Targets1}),
+              [gen_fsm_test_driver:add_trace(
+                 FsmID, {try_cast_to, Nd, Req1}) || Nd <- Targets1],
+              CastTargets = [{Idx, Nd, Nd} || {Idx, Nd} <- Targets1],
+              {CastTargets, []}
+      end},
+     {{erlang, '!'},
+      fun([To, Msg]) ->
+              ?PURE_DRIVER:add_trace(FsmID, {'!', To, Msg})
+      end},
+     {{app_helper, get_env},
+      fun([riak_core, vnode_inactivity_timeout, _Default]) ->
+              9999999999
+      end},
+     {{error_logger, error_msg},
+      fun([Fmt, Args]) ->
+              Str = io_lib:format(Fmt, Args),
+              ?PURE_DRIVER:add_trace(FsmID, {error_logger, error_msg,
+                                             lists:flatten(Str)})
+      end},
+     {{error_logger, info_msg},
+      fun([Fmt, Args]) ->
+              Str = io_lib:format(Fmt, Args),
+              ?PURE_DRIVER:add_trace(FsmID, {error_logger, info_msg,
+                                             lists:flatten(Str)})
+      end}].
+
+-ifdef(TEST).
+
+fake_cover_test() ->
+    %% These functions are purely for manual testing/usage demonstration,
+    %% but we ought to execute them once for the coverage report's sake.
+    _ = ?MODULE:pure_unanimous(),
+    _ = ?MODULE:pure_conflict(),
+    _ = ?MODULE:pure_conflict_notfound(),
+    ok.
+
+-endif. % TEST
