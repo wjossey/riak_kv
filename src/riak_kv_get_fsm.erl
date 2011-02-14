@@ -406,7 +406,8 @@ pure_unanimous() ->
                                   5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, Idx, ReqID}} ||
                  Idx <- Parts],
-    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    {stopped, normal, _state, _extra_events} = X =
+        ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
     [{res, X},
      {state, ?PURE_DRIVER:get_state(Ref)},
      {statedata, ?PURE_DRIVER:get_statedata(Ref)},
@@ -420,32 +421,22 @@ pure_conflict() ->
     Key = <<"k">>,
     Value = <<"42!">>,
     ClientID = <<"clientID1">>,
-    Ring = chash:fresh(NumParts, SeedNode),
+    Ring = riak_kv_util:fresh_test_ring(NumParts, 42, SeedNode),
     Obj = riak_object:increment_vclock(
             riak_object:new(Bucket, Key, Value), ClientID),
     Obj2 = riak_object:increment_vclock(
              riak_object:new(Bucket, Key, <<"other copy sorry">>), <<"booID">>),
     N = 3,
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
-    CastTargets = [{Idx, SeedNode, SeedNode} || Idx <- Parts],
 
-    PureOpts = [{debug,true},
-                {my_ref, Ref},
-                {{riak_core_ring_manager, get_my_ring},
-                 {ok, riak_core_ring:fresh(NumParts, SeedNode)}},
-                {timer_send_after, do_not_bother},
-                %% Use pure get_bucket default (it's a long, tedious list)
-                {node_watcher_nodes, [SeedNode]},
-                %% The cast_targets prop is used by the default handler
-                %% for impurt_riak_kv_util_try_cast, so don't delete it
-                %% unless you're overriding the try_cast property.
-                {cast_targets, CastTargets}
-               ],
+    PureOpts = [] ++
+        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
                                   5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
               {send_event, {r, {ok, Obj2}, lists:nth(2, Parts), ReqID}}],
-    X = ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
+    {need_events, waiting_read_repair, _state} = X =
+        ?PURE_DRIVER:run_to_completion(Ref, ?MODULE, InitIter, Events),
     [{res, X},
      {state, ?PURE_DRIVER:get_state(Ref)},
      {statedata, ?PURE_DRIVER:get_statedata(Ref)},
