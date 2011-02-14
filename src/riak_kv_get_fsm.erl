@@ -401,7 +401,7 @@ pure_unanimous() ->
 
     PureOpts = [
                ] ++
-        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
+        riak_kv_util:make_fsm_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
                                   5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, Idx, ReqID}} ||
@@ -430,7 +430,7 @@ pure_conflict() ->
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
 
     PureOpts = [] ++
-        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
+        riak_kv_util:make_fsm_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, quorum,
                                   5000, fake_client_pid, PureOpts),
     Events = [{send_event, {r, {ok, Obj}, lists:nth(1, Parts), ReqID}},
@@ -460,7 +460,7 @@ pure_conflict_notfound() ->
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
 
     PureOpts = [] ++
-        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
+        riak_kv_util:make_fsm_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
                                   5000, fake_client_pid, PureOpts),
     %% Won't work: read-repair barfs.
@@ -496,7 +496,7 @@ pure_1notfound_2ok_diff_objs() ->
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
 
     PureOpts = [] ++
-        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
+        riak_kv_util:make_fsm_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
                                   5000, fake_client_pid, PureOpts),
     %% Won't work: read-repair barfs.
@@ -532,7 +532,7 @@ pure_1notfound_2ok_diff_objs2() ->
     Parts  = lists:sublist([Part || {Part, _} <- element(2, Ring)], N),
 
     PureOpts = [] ++
-        make_general_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
+        riak_kv_util:make_fsm_pure_opts(Ref, NumParts, SeedNode, 42, Bucket),
     InitIter = ?MODULE:pure_start(Ref, ReqID, Bucket, Key, R,
                                   5000, fake_client_pid, PureOpts),
     %% Won't work: read-repair barfs.
@@ -548,101 +548,6 @@ pure_1notfound_2ok_diff_objs2() ->
      {state, ?PURE_DRIVER:get_state(Ref)},
      {statedata, ?PURE_DRIVER:get_statedata(Ref)},
      {trace, ?PURE_DRIVER:get_trace(Ref)}].
-    
-default_bucket_props(Bucket) ->
-    [{name,Bucket},
-     {n_val,3},
-     {allow_mult,true},
-     {last_write_wins,false},
-     {big_vclock,1000},
-     {young_vclock,-1},
-     {precommit,[]},
-     {postcommit,[]},
-     {chash_keyfun,{riak_core_util,chash_std_keyfun}},
-     {linkfun,{modfun,riak_kv_wm_link_walker,mapreduce_linkfun}},
-     {linkfun,{modfun,riak_kv_wm_link_walker,mapreduce_linkfun}},
-     {old_vclock,86400},
-     {young_vclock,20},
-     {big_vclock,50},
-     {small_vclock,10},
-     {r,quorum},
-     {w,quorum},
-     {dw,quorum},
-     {rw,quorum}].
-
-make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval, Bucket) ->
-    make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval,
-                           Bucket, []).
-
-make_general_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval,
-                       Bucket, Opts)
-  when PartitionInterval > 0 ->
-    Ring0 = riak_kv_util:fresh_test_ring(NumParts, PartitionInterval, SeedNode),
-    Ring = case proplists:get_value(partition_owners, Opts) of
-               undefined ->
-                   Ring0;
-               Others ->
-                   riak_kv_util:subst_test_ring_owners(Ring0, Others)
-           end,
-    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % ugly hack
-    [{debug, true},
-     {my_ref, FsmID},
-     {{erlang, node}, SeedNode},
-     {{riak_core_ring_manager, get_my_ring}, {ok, ChState}},
-     {{riak_core_node_watcher, nodes}, [SeedNode]},
-     {{riak_core_bucket, get_bucket}, default_bucket_props(Bucket)},
-     {timer_send_after, do_not_bother},
-     {{riak_core_util, chash_key},
-      fun(_) ->
-              %% This magic hash will always use a preflist
-              %% that is exactly equal to the ring's list
-              %% of partitions.
-              <<255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255>>
-      end},
-     {{riak_kv_util, try_cast},
-      fun([Req1, UpNodes1, Targets1]) ->
-              gen_fsm_test_driver:add_trace(
-                FsmID, {try_cast, UpNodes1, Targets1}),
-              [gen_fsm_test_driver:add_trace(
-                 FsmID, {try_cast_to, Nd, Req1}) || Nd <- Targets1],
-              CastTargets = [{Idx, Nd, Nd} || {Idx, Nd} <- Targets1],
-              {CastTargets, []}
-      end},
-     {{riak_core_util, moment}, a_fake_moment},
-     {{riak_kv_vnode, del},
-      fun([Idx, BKey, ReqId]) ->
-              gen_fsm_test_driver:add_trace(
-                FsmID, {vnode_del, Idx, BKey, ReqId})
-      end},
-     {{riak_kv_vnode, readrepair},
-      fun([IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPureOpts1]) ->
-              gen_fsm_test_driver:add_trace(
-                FsmID, {readrepair, IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPureOpts1})
-      end},
-     {{riak_kv_stat, update},
-      fun([Name1]) ->
-              gen_fsm_test_driver:add_trace(FsmID, Name1)
-      end},
-     {{erlang, '!'},
-      fun([To, Msg]) ->
-              ?PURE_DRIVER:add_trace(FsmID, {'!', To, Msg})
-      end},
-     {{app_helper, get_env},
-      fun([riak_core, vnode_inactivity_timeout, _Default]) ->
-              9999999999
-      end},
-     {{error_logger, error_msg},
-      fun([Fmt, Args]) ->
-              Str = io_lib:format(Fmt, Args),
-              ?PURE_DRIVER:add_trace(FsmID, {error_logger, error_msg,
-                                             lists:flatten(Str)})
-      end},
-     {{error_logger, info_msg},
-      fun([Fmt, Args]) ->
-              Str = io_lib:format(Fmt, Args),
-              ?PURE_DRIVER:add_trace(FsmID, {error_logger, info_msg,
-                                             lists:flatten(Str)})
-      end}].
 
 -ifdef(TEST).
 

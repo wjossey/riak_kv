@@ -24,6 +24,7 @@
 %% @doc Various functions that are useful throughout riak_kv.
 -module(riak_kv_util).
 
+-define(PURE_DRIVER, gen_fsm_test_driver).
 
 -export([is_x_deleted/1,
          obj_not_deleted/1,
@@ -33,7 +34,9 @@
          normalize_rw_value/2,
          make_request/2,
          fresh_test_ring/3,
-         subst_test_ring_owners/2]).
+         subst_test_ring_owners/2,
+         make_fsm_pure_opts/5, make_fsm_pure_opts/6,
+         make_test_bucket_props/1]).
 
 -include_lib("riak_kv_vnode.hrl").
 
@@ -151,6 +154,100 @@ subst_test_ring_owners({NumParts, Ring0}, NewOwnerList) ->
                      end
              end, Ring0),
     {NumParts, Ring}.
+
+make_fsm_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval, Bucket) ->
+    make_fsm_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval,
+                       Bucket, []).
+
+make_fsm_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval, Bucket, Opts)
+  when PartitionInterval > 0 ->
+    Ring0 = riak_kv_util:fresh_test_ring(NumParts, PartitionInterval, SeedNode),
+    Ring = case proplists:get_value(partition_owners, Opts) of
+               undefined ->
+                   Ring0;
+               Others ->
+                   riak_kv_util:subst_test_ring_owners(Ring0, Others)
+           end,
+    ChState = {chstate, SeedNode, [], Ring, dict:new()}, % ugly hack
+    [{debug, true},
+     {my_ref, FsmID},
+     {{erlang, node}, SeedNode},
+     {{riak_core_ring_manager, get_my_ring}, {ok, ChState}},
+     {{riak_core_node_watcher, nodes}, [SeedNode]},
+     {{riak_core_bucket, get_bucket}, make_test_bucket_props(Bucket)},
+     {timer_send_after, do_not_bother},
+     {{riak_core_util, chash_key},
+      fun(_) ->
+              %% This magic hash will always use a preflist
+              %% that is exactly equal to the ring's list
+              %% of partitions.
+              <<255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255>>
+      end},
+     {{riak_kv_util, try_cast},
+      fun([Req1, UpNodes1, Targets1]) ->
+              gen_fsm_test_driver:add_trace(
+                FsmID, {try_cast, UpNodes1, Targets1}),
+              [gen_fsm_test_driver:add_trace(
+                 FsmID, {try_cast_to, Nd, Req1}) || Nd <- Targets1],
+              CastTargets = [{Idx, Nd, Nd} || {Idx, Nd} <- Targets1],
+              {CastTargets, []}
+      end},
+     {{riak_core_util, moment}, a_fake_moment},
+     {{riak_kv_vnode, del},
+      fun([Idx, BKey, ReqId]) ->
+              gen_fsm_test_driver:add_trace(
+                FsmID, {vnode_del, Idx, BKey, ReqId})
+      end},
+     {{riak_kv_vnode, readrepair},
+      fun([IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPureOpts1]) ->
+              gen_fsm_test_driver:add_trace(
+                FsmID, {readrepair, IdxFallback1, BKey1, FinalRObj1, ReqId1, StartTime1, RRPureOpts1})
+      end},
+     {{riak_kv_stat, update},
+      fun([Name1]) ->
+              gen_fsm_test_driver:add_trace(FsmID, Name1)
+      end},
+     {{erlang, '!'},
+      fun([To, Msg]) ->
+              ?PURE_DRIVER:add_trace(FsmID, {'!', To, Msg})
+      end},
+     {{app_helper, get_env},
+      fun([riak_core, vnode_inactivity_timeout, _Default]) ->
+              9999999999
+      end},
+     {{error_logger, error_msg},
+      fun([Fmt, Args]) ->
+              Str = io_lib:format(Fmt, Args),
+              ?PURE_DRIVER:add_trace(FsmID, {error_logger, error_msg,
+                                             lists:flatten(Str)})
+      end},
+     {{error_logger, info_msg},
+      fun([Fmt, Args]) ->
+              Str = io_lib:format(Fmt, Args),
+              ?PURE_DRIVER:add_trace(FsmID, {error_logger, info_msg,
+                                             lists:flatten(Str)})
+      end}].
+
+make_test_bucket_props(Bucket) ->
+    [{name,Bucket},
+     {n_val,3},
+     {allow_mult,true},
+     {last_write_wins,false},
+     {big_vclock,1000},
+     {young_vclock,-1},
+     {precommit,[]},
+     {postcommit,[]},
+     {chash_keyfun,{riak_core_util,chash_std_keyfun}},
+     {linkfun,{modfun,riak_kv_wm_link_walker,mapreduce_linkfun}},
+     {linkfun,{modfun,riak_kv_wm_link_walker,mapreduce_linkfun}},
+     {old_vclock,86400},
+     {young_vclock,20},
+     {big_vclock,50},
+     {small_vclock,10},
+     {r,quorum},
+     {w,quorum},
+     {dw,quorum},
+     {rw,quorum}].
 
 %% ===================================================================
 %% EUnit tests
