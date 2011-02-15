@@ -192,6 +192,8 @@ make_fsm_pure_opts(FsmID, NumParts, SeedNode, PartitionInterval, Bucket, Opts)
               CastTargets = [{Idx, Nd, Nd} || {Idx, Nd} <- Targets1],
               {CastTargets, []}
       end},
+     {{riak, local_client}, {ok, pure_local_client_bogus_default}},
+     {{mod, get_bucket}, make_test_bucket_props(Bucket)},
      {{riak_core_util, moment}, a_fake_moment},
      {{riak_kv_vnode, del},
       fun([Idx, BKey, ReqId]) ->
