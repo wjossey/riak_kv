@@ -557,6 +557,8 @@ fake_cover_test() ->
     _ = ?MODULE:pure_unanimous(),
     _ = ?MODULE:pure_conflict(),
     _ = ?MODULE:pure_conflict_notfound(),
+    _ = ?MODULE:pure_1notfound_2ok_diff_objs(),
+    _ = ?MODULE:pure_1notfound_2ok_diff_objs2(),
     ok.
 
 -endif. % TEST
