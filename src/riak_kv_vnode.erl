@@ -83,14 +83,10 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, riak_kv_vnode).
 
 get(Preflist, BKey, ReqId) ->
-    Req = ?KV_GET_REQ{bkey=BKey,
-                      req_id=ReqId},
-    %% Assuming this function is called from a FSM process
-    %% so self() == FSM pid
-    riak_core_vnode_master:sync_spawn_command(Preflist,
-                                              Req,
-                                              {fsm, ReqId, self()},
-                                              riak_kv_vnode_master).
+    riak_core_vnode_master:sync_command(Preflist,
+                                        ?KV_GET_REQ{bkey=BKey,
+                                                    req_id=ReqId},
+                                        riak_kv_vnode_master).
 
 mget(Preflist, BKeys, ReqId) ->
     Req = ?KV_MGET_REQ{bkeys=BKeys,
