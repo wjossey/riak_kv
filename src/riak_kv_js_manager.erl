@@ -167,7 +167,7 @@ handle_cast(_Msg, State) ->
 handle_info(#'DOWN'{pid=Pid}, #state{master=Master, idle=Idle}=State) ->
     ets:delete(Master, Pid),
     ets:delete(Idle, Pid),
-    riak_kv_js_sup:start_js(self()),
+    riak_kv_js_sup:start_js(self(), State#state.name),
     {noreply, State};
 
 handle_info(_Info, State) ->
