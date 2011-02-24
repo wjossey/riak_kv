@@ -65,7 +65,7 @@ new(B, K, V) when is_binary(B), is_binary(K) ->
     new(B, K, V, no_initial_metadata).
 
 %% @doc Constructor for new riak objects with an initial content-type.
--spec new(Bucket::bucket(), Key::key(), Value::value(), string() | dict()) -> riak_object().
+-spec new(Bucket::bucket(), Key::key(), Value::value(), string() | dict() | 'no_initial_metadata') -> riak_object().
 new(B, K, V, C) when is_binary(B), is_binary(K), is_list(C) ->
     new(B, K, V, dict:from_list([{?MD_CTYPE, C}]));
 
