@@ -37,7 +37,7 @@
                 wait_pls :: [term()],
                 simul_pls :: integer(),
                 vns :: term(),
-                bucket :: riak_object:bucket(),
+                bucket :: riak_object:bucket() | '_',
                 input,
                 timeout :: pos_integer(),
                 req_id :: pos_integer(),
