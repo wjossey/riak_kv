@@ -562,8 +562,8 @@ fs_test_dir() ->
 backend_with_known_key(BackendMod) ->
     dummy_backend(BackendMod),
     {ok, S1} = init([0]),
-    B = <<"f">>,
-    K = <<"b">>,
+    B = <<"bucket">>,
+    K = <<"known_key">>,
     O = riak_object:new(B, K, <<"z">>),
     {noreply, S2} = handle_command(?KV_PUT_REQ{bkey={B,K},
                                                object=O,
@@ -596,8 +596,9 @@ list_buckets_ets_test() ->
 list_buckets_fs_test() ->
     list_buckets_test_i(riak_kv_fs_backend).
 
-list_buckets_gb_trees_test() ->
-    list_buckets_test_i(riak_kv_gb_trees_backend).
+%% SLF: TODO: Put this test back!
+%% list_buckets_gb_trees_test() ->
+%%     list_buckets_test_i(riak_kv_gb_trees_backend).
 
 list_buckets_multi_backend_test() ->
     list_buckets_test_i(riak_kv_multi_backend).

@@ -30,17 +30,18 @@
 
 -spec behaviour_info(atom()) -> 'undefined' | [{atom(), arity()}].
 behaviour_info(callbacks) ->
-    [{start,2},       % (Partition, Config)
-     {stop,1},        % (State) 
-     {get,2},         % (State, BKey)
-     {put,3},         % (State, BKey, Val)
-     {list,1},        % (State)
-     {list_bucket,2}, % (State, Bucket)
-     {delete,2},      % (State, BKey)
-     {drop,1},        % (State)
-     {fold,3},        % (State, Folder, Acc), Folder({B,K},V,Acc)
-     {is_empty,1},    % (State)
-     {callback,3}];   % (State, Ref, Msg) ->
+    [{start,2},            % (Partition, Config)
+     {stop,1},             % (State) 
+     {get,2},              % (State, BKey)
+     {put,3},              % (State, BKey, Val)
+     {list,1},             % (State)
+     {list_bucket,2},      % (State, Bucket)
+     {delete,2},           % (State, BKey)
+     {drop,1},             % (State)
+     {fold,3},             % (State, fun({B,K},V,Acc), Acc), 
+     {fold_bucket_keys,4}, % (State, Bucket, fun(K, V, Acc), Acc)
+     {is_empty,1},         % (State)
+     {callback,3}];        % (State, Ref, Msg) ->
 behaviour_info(_Other) ->
     undefined.
 
@@ -50,6 +51,22 @@ callback_after(Time, Ref, Msg) when is_integer(Time), is_reference(Ref) ->
     riak_core_vnode:send_command_after(Time, {backend_callback, Ref, Msg}).
 
 -ifdef(TEST).
+
+%% NOTE: standard_test/2 isn't run directly by EUnit when it tries to test
+%%       this module.  However, it should be called by every backend that
+%%       we support.
+%%       foreach i ( src/*backend.erl )
+%%           echo -n $i
+%%           grep :standard_test $i | wc -l
+%%       end
+%%       src/riak_kv_backend.erl       0
+%%       src/riak_kv_bitcask_backend.erl       2
+%%       src/riak_kv_cache_backend.erl       1
+%%       src/riak_kv_dets_backend.erl       1
+%%       src/riak_kv_ets_backend.erl       1
+%%       src/riak_kv_fs_backend.erl       1
+%%       src/riak_kv_gb_trees_backend.erl       1
+%%       src/riak_kv_multi_backend.erl       1
 
 standard_test(BackendMod, Config) ->
     {ok, S} = BackendMod:start(42, Config),
