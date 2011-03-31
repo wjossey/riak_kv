@@ -28,7 +28,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 -export([start/2,stop/1,get/2,put/3,list/1,list_bucket/2,
-         delete/2,fold/3, is_empty/1, drop/1, callback/3]).
+         delete/2, fold/3, fold_bucket_keys/4, is_empty/1, drop/1, callback/3]).
 
 % @type state() = term().
 -record(state, {table, path}).
@@ -105,6 +105,14 @@ list_bucket(#state{table=T}, Bucket) ->
 
 fold(#state{table=T}, Fun0, Acc) -> 
     Fun = fun({{B,K}, V}, AccIn) -> Fun0({B,K}, V, AccIn) end,
+    dets:foldl(Fun, Acc, T).
+
+fold_bucket_keys(#state{table=T}, Bucket, Fun0, Acc) -> 
+    Fun = fun({{B,K}, V}, AccIn) when Bucket == '_'; B == Bucket ->
+                  Fun0({B,K}, V, AccIn);
+             (_BK_V, AccIn) ->
+                  AccIn
+          end,
     dets:foldl(Fun, Acc, T).
 
 is_empty(#state{table=T}) ->

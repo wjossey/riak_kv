@@ -28,7 +28,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 -export([start/2, stop/1,get/2,put/3,list/1,list_bucket/2,
-         delete/2,is_empty/1,fold/3,drop/1,callback/3]).
+         delete/2,is_empty/1,fold/3,fold_bucket_keys/4,drop/1,callback/3]).
 
 % @type state() = term().
 -record(state, {pid}).
@@ -99,6 +99,11 @@ fold(#state{ pid=Pid }, Fun0, Acc) ->
     Pid ! {fold, Fun0, Acc, self(), Ref},
     receive {fold_response, Result, Ref} -> Result end.
 
+fold_bucket_keys(#state{ pid=Pid }, Bucket, Fun0, Acc) ->
+    Ref = make_ref(),
+    Pid ! {fold_bucket_keys, Bucket, Fun0, Acc, self(), Ref},
+    receive {fold_bucket_keys_response, Result, Ref} -> Result end.
+
 drop(#state{ pid=Pid }) ->
     Ref = make_ref(),
     Pid ! {drop, self(), Ref},
@@ -156,6 +161,11 @@ tree_loop(Tree) ->
                    srv_fold(Tree, Fun0, Acc), Ref},
             tree_loop(Tree);
 
+        {fold_bucket_keys, Bucket, Fun0, Acc, Pid, Ref} ->
+            Pid ! {fold_bucket_keys_response,
+                   srv_fold_bucket_keys(Tree, Bucket, Fun0, Acc), Ref},
+            tree_loop(Tree);
+
         {stop, Pid, Ref} ->
             Pid ! {stop_response, ok, Ref}
     end.
@@ -181,6 +191,22 @@ srv_fold1(none, _Fun0, Acc) ->
 srv_fold1({K,V,Iter}, Fun0, Acc) ->
     srv_fold1(gb_trees:next(Iter), Fun0, Fun0(K,V,Acc)).
 
+srv_fold_bucket_keys(Tree, Bucket, Fun0, Acc) ->
+    Iter0 = gb_trees:iterator(Tree),
+    srv_fold_bucket_keys1(gb_trees:next(Iter0), Bucket, Fun0, Acc).
+
+srv_fold_bucket_keys1(none, _Bucket, _Fun0, Acc) ->
+    io:format(user, "LINE ~p Acc ~p\n", [?LINE, Acc]),
+    Acc;
+srv_fold_bucket_keys1({{_Bucket_fromTab, K}, V, Iter}, '_'=Bucket, Fun0, Acc) ->
+    io:format(user, "LINE ~p got ~p ~p ~P for '_'\n", [?LINE, _Bucket_fromTab, K, V, 10]),
+    srv_fold_bucket_keys1(gb_trees:next(Iter), Bucket, Fun0, Fun0(K,V,Acc));
+srv_fold_bucket_keys1({{Bucket, K}, V, Iter}, Bucket, Fun0, Acc) ->
+    io:format(user, "LINE ~p got ~p ~p ~P\n", [?LINE, Bucket, K, V, 10]),
+    srv_fold_bucket_keys1(gb_trees:next(Iter), Bucket, Fun0, Fun0(K,V,Acc));
+srv_fold_bucket_keys1({_BKey, _V, Iter}, Bucket, Fun0, Acc) ->
+    io:format(user, "DEBUG: srv_fold_bucket_keys1: want ~p, skipping ~p\n", [Bucket, _BKey]),
+    srv_fold_bucket_keys1(gb_trees:next(Iter), Bucket, Fun0, Acc).
 
 %%
 %% Test

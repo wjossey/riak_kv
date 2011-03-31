@@ -38,7 +38,7 @@
 -module (riak_kv_cache_backend).
 -behavior(riak_kv_backend).
 -export([start/2, stop/1, get/2, put/3, list/1, list_bucket/2, delete/2]).
--export([drop/1, is_empty/1, fold/3, callback/3]).
+-export([drop/1, is_empty/1, fold/3, fold_bucket_keys/4, callback/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(PRINT(Var), error_logger:info_msg("DEBUG: ~p:~p - ~p: ~p~n", [?MODULE, ?LINE, ??Var, Var])).
@@ -87,6 +87,9 @@ is_empty(State) ->
 
 fold(State, Fun0, Acc) ->
     gen_server:call(State, {fold, Fun0, Acc}).
+
+fold_bucket_keys(State, _Bucket, Fun0, Acc) ->
+    gen_server:call(State, {fold, Fun0, Acc}). % TODO: fix this
 
 %% Ignore callbacks for other backends so multi backend works
 callback(_State, _Ref, _Msg) ->

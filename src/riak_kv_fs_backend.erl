@@ -25,7 +25,7 @@
 -module(riak_kv_fs_backend).
 -behavior(riak_kv_backend).
 -export([start/2,stop/1,get/2,put/3,list/1,list_bucket/2,delete/2]).
--export([fold/3, drop/1, is_empty/1, callback/3]).
+-export([fold/3, fold_bucket_keys/4, drop/1, is_empty/1, callback/3]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -144,6 +144,9 @@ fold(State, Fun0, Acc) ->
                   end
           end,
     lists:foldl(Fun, Acc, ?MODULE:list(State)).
+
+fold_bucket_keys(State, _Bucket, Fun0, Acc) ->
+    fold(State, Fun0, Acc). %% TODO: fix this
 
 drop(State) ->
     [file:delete(location(State, BK)) || BK <- ?MODULE:list(State)],
