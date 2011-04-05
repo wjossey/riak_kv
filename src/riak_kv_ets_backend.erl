@@ -28,7 +28,8 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
--export([start/2,stop/1,get/2,put/3,list/1,list_bucket/2,delete/2,
+-export([capability/1,capability/3,
+         start/2,stop/1,get/2,put/3,list/1,list_bucket/2,delete/2,
          is_empty/1, drop/1, fold/3, fold_bucket_keys/4, callback/3]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -37,14 +38,26 @@
 % @type state() = term().
 -record(state, {t}).
 
+-spec capability(atom()) -> boolean() | 'maybe'.
+
+capability(_) ->
+    false.
+
+-spec capability(term(), binary(), atom()) -> boolean().
+
+capability(_BeThingie, _Bucket, _) ->
+    false.
+
 % @spec start(Partition :: integer(), Config :: proplist()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}
-start(Partition, _Config) ->
-    gen_server:start_link(?MODULE, [Partition], []).
+start(Partition, Config) ->
+    TableType = proplists:get_value(table_type, Config, set),
+    gen_server:start_link(?MODULE, [Partition, TableType], []).
 
 %% @private
-init([Partition]) ->
-    {ok, #state{t=ets:new(list_to_atom(integer_to_list(Partition)),[])}}.
+init([Partition, TableType]) ->
+    {ok, #state{t=ets:new(list_to_atom(integer_to_list(Partition)),
+                          [TableType])}}.
 
 %% @private
 handle_cast(_, State) -> {noreply, State}.
@@ -155,8 +168,31 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %%
 -ifdef(TEST).
 
+bogus_type_test() ->
+    %% Weird, try riak_kv_backend:standard_test(?MODULE, [{table_type, bogus3}])
+    %%        catch X:Y -> should_be_here end.
+    %% ... doesn't catch.  What is EUnit doing?  What am I doing?  ....
+    {Pid, Ref} = 
+        spawn_monitor(fun() ->
+            riak_kv_backend:standard_test(?MODULE, [{table_type, bogus5}]),
+            exit(should_never_get_here)
+        end),
+    %% Double-weird, *both* receive clauses are necessary.  {sigh}  It's
+    %% a random thing which of the two exceptions we get in the 'DOWN' msg.
+    receive
+        {'DOWN', Ref, process, Pid, _YY = {{badmatch, _}, _}} ->
+            ok;
+        {'DOWN', Ref, process, Pid, _YY = {badarg, _}} ->
+            ok
+    after 1000 ->
+            exit(bogus_type_test_timeout)
+    end.
+
 simple_test() ->
     riak_kv_backend:standard_test(?MODULE, []).
+
+simple_ordered_set_test() ->
+    riak_kv_backend:standard_test(?MODULE, [{table_type, ordered_set}]).
 
 -ifdef(EQC).
 eqc_test() ->

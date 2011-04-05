@@ -24,7 +24,8 @@
 
 -module(riak_kv_fs_backend).
 -behavior(riak_kv_backend).
--export([start/2,stop/1,get/2,put/3,list/1,list_bucket/2,delete/2]).
+-export([capability/1,capability/3,
+         start/2,stop/1,get/2,put/3,list/1,list_bucket/2,delete/2]).
 -export([fold/3, fold_bucket_keys/4, drop/1, is_empty/1, callback/3]).
 
 -ifdef(TEST).
@@ -32,6 +33,16 @@
 -endif.
 % @type state() = term().
 -record(state, {dir}).
+
+-spec capability(atom()) -> boolean() | 'maybe'.
+
+capability(_) ->
+    false.
+
+-spec capability(term(), binary(), atom()) -> boolean().
+
+capability(_BeThingie, _Bucket, _) ->
+    false.
 
 %% @spec start(Partition :: integer(), Config :: proplist()) ->
 %%          {ok, state()} | {{error, Reason :: term()}, state()}

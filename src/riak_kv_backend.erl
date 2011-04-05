@@ -30,7 +30,9 @@
 
 -spec behaviour_info(atom()) -> 'undefined' | [{atom(), arity()}].
 behaviour_info(callbacks) ->
-    [{start,2},            % (Partition, Config)
+    [{capability,1},       % (Type::atom()) -> boolean() | 'maybe'
+     {capability,3},       % (State, Bucket::binary(), Type::atom()) -> boolean()
+     {start,2},            % (Partition, Config)
      {stop,1},             % (State) 
      {get,2},              % (State, BKey)
      {put,3},              % (State, BKey, Val)
