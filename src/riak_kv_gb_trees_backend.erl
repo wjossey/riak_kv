@@ -27,12 +27,22 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
--export([start/2, stop/1,get/2,put/3,list/1,list_bucket/2,
+-export([capability/1,capability/3,
+         start/2, stop/1,get/2,put/3,list/1,list_bucket/2,
          delete/2,is_empty/1,fold/3,fold_bucket_keys/4,drop/1,callback/3]).
 
 % @type state() = term().
 -record(state, {pid}).
 
+-spec capability(atom()) -> boolean() | 'maybe'.
+
+capability(_) ->
+    false.
+
+-spec capability(term(), binary(), atom()) -> boolean().
+
+capability(_BeThingie, _Bucket, _) ->
+    false.
 
 % @spec start(Partition :: integer(), Config :: integer()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}

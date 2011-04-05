@@ -26,7 +26,9 @@
 -author('Dave Smith <dizzyd@basho.com>').
 
 %% KV Backend API
--export([start/2,
+-export([capability/1,
+         capability/3,
+         start/2,
          stop/1,
          get/2,
          put/3,
@@ -50,6 +52,16 @@
 -include_lib("bitcask/include/bitcask.hrl").
 
 -define(MERGE_CHECK_INTERVAL, timer:minutes(3)).
+
+-spec capability(atom()) -> boolean() | 'maybe'.
+
+capability(_) ->
+    false.
+
+-spec capability(term(), binary(), atom()) -> boolean().
+
+capability(_BeThingie, _Bucket, _) ->
+    false.
 
 start(Partition, Config) ->
 
