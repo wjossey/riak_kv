@@ -63,12 +63,28 @@
 
 -spec capability(atom()) -> boolean() | 'maybe'.
 
+capability(has_ordered_keys) ->
+    maybe;
+capability(keys_and_values_stored_together) ->
+    maybe;
+capability(vclocks_and_values_stored_together) ->
+    maybe;
+capability(fold_will_block) ->
+    maybe;
 capability(_) ->
     false.
 
 -spec capability(term(), binary(), atom()) -> boolean().
 
-capability(_BeThingie, _Bucket, _) ->
+capability(_State, _Bucket, has_ordered_keys) ->
+    true; %% SLF TODO: Make bucket-specific answer
+capability(_State, _Bucket, keys_and_values_stored_together) ->
+    true; %% SLF TODO: Make bucket-specific answer
+capability(_State, _Bucket, vclocks_and_values_stored_together) ->
+    true; %% SLF TODO: Make bucket-specific answer
+capability(_State, _Bucket, fold_will_block) ->
+    true; %% SLF TODO: Make bucket-specific answer
+capability(_State, _Bucket, _) ->
     false.
 
 % @spec start(Partition :: integer(), Config :: integer()) ->

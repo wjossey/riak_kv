@@ -55,12 +55,31 @@
 
 -spec capability(atom()) -> boolean() | 'maybe'.
 
+capability(has_ordered_keys) ->
+    maybe;
+capability(keys_and_values_stored_together) ->
+    false;
+capability(vclocks_and_values_stored_together) ->
+    %% SLF TODO: I've an idea for bitcask to store vclocks in its hint
+    %%           file.  Perhaps that could make folds cheaper for
+    %%           stuff like repl full sync?
+    true;
+capability(fold_will_block) ->
+    true; %% SLF TODO: change this
 capability(_) ->
     false.
 
 -spec capability(term(), binary(), atom()) -> boolean().
 
-capability(_BeThingie, _Bucket, _) ->
+capability(_Reftuple, _Bucket, has_ordered_keys) ->
+    false; %% TODO: change this when ordered keys are available.
+capability(_Reftuple, _Bucket, keys_and_values_stored_together) ->
+    false;
+capability(_Reftuple, _Bucket, vclocks_and_values_stored_together) ->
+    true;
+capability(_Reftuple, _Bucket, fold_will_block) ->
+    true; %% SLF TODO: change this
+capability(_Reftuple, _Bucket, _) ->
     false.
 
 start(Partition, Config) ->
