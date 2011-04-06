@@ -18,6 +18,102 @@
 %% specific language governing permissions and limitations
 %% under the License.
 %%
+%% @doc Riak Key-Value store VNode Implementation
+%%
+%% == Non-blocking vnode operations ==
+%%
+%% The Riak KV vnode interface now supports "non-blocking" style
+%% operations for the backends that support at least version 2 of
+%% the backend API.  In this context, non-blocking means that
+%% the following operations:
+%%
+%% <ul>
+%% <li> List buckets </li>
+%% <li> List keys within a bucket </li>
+%% <li> Fold over all keys (in a bucket or the entire vnode) </li>
+%% </ul>
+%%
+%% ... the vnode will be able to respond to external events while
+%% those operations are still in progress.  The initial version of the
+%% backend API could not yield execution back to the vnode while one
+%% of those operations was running.  For a vnode with many thousands
+%% (or millions) of keys, the vnode could appear unresponsive for many
+%% seconds, minutes, or longer.
+%%
+%% In version 2 of the backend API, the vnode will only operate upon
+%% ?NUM_KEYS_PER_VNODE_ITERATION keys before creating a continuation
+%% tuple and sending that continuation to itself.  Many long-running
+%% operations may be running simultaneously via the continuation
+%% mechanism.  Since a vnode is an Erlang/OTP gen_fsm server, of
+%% course, it is single-threaded and can therefore only truly execute
+%% one operation at a time.
+%%
+%% There is no limit on the number of vnode continuations that may be
+%% in progress at any instant in time.  
+%%
+%% === Backend API version 2 ===
+%%
+%% Version 2 of the KV vnode API must export the following callback
+%% functions:
+%%
+%% <dl>
+%% <dt> `capability/0' and `capability/2' </dt>
+%% <dd> Returns a proplist of well-known and optional properties for
+%%      the backend.  The arity-2 version of the callback is necessary
+%%      because a backend's properties (e.g. `has_ordered_keys') may
+%%      vary from bucket to bucket (e.g. `riak_kv_multi_backend.erl').
+%%      Arguments for the arity-2 version:
+%%        <ol>
+%%        <li> `BackendRef :: term()' </li>
+%%        <li> `Bucket :: binary()' </li>
+%%        </ol>
+%% </dd>
+%% <dt> `bev2_new_bucket_iterator/2' </dt>
+%% <dd> Create a backend-specific iterator to start a "list buckets"
+%%      operation.  This callback is distinct from the
+%%      `bev2_new_fold_iterator/6' because some backends may manage
+%%      bucket names separately from general key-value storage and thus
+%%      may be able to retrieve bucket names more efficiently.
+%%      Arguments:
+%%        <ol>
+%%        <li> `BackendRef :: term()' </li>
+%%        <li> `Idx :: integer()', the vnode's index number </li>
+%%        </ol>
+%% </dd>
+%% <dt> `bev2_new_fold_iterator/6' </dt>
+%% <dd> Create a backend-specific iterator to start a "list keys"
+%%      and fold operations.
+%%      Arguments:
+%%        <ol>
+%%        <li> `BackendRef :: term()' </li>
+%%        <li> `Idx :: integer()', the vnode's index number </li>
+%%        <li> `Bucket :: binary()' </li>
+%%        <li> `WantBKey :: bool()', Use `true' if the fold function wants the
+%%             "BKey" (i.e. a `{Bucket::binary(), Key::binary()}' tuple)
+%%             data passed to it.  Use `false' to always pass `undefined'. </li>
+%%        <li> `WantMd :: bool()', Use `true' if the fold function wants the
+%%             key's metadata passed to it.  Use `false' to always pass
+%%             `undefined'. NOTE: This feature is not implemented by all/most
+%%             backend implementations. </li>
+%%        <li> `WantVal :: bool()', Use `true' if the fold function wants the
+%%             key's value blob passed to it.  Use `false' to always pass
+%%             `undefined'. For operations such as "list keys", which is
+%%             implemented as a fold over all items in a bucket but where
+%%             the caller is not interested in the value blobs of those keys,
+%%             `WantVal=false' gives the backend an opportunity to optimize
+%%             its operation by not fetching each key's value blob, e.g.,
+%%             avoid the cost of fetching the value blob from disk. </li>
+%%        </ol>
+%% </dd>
+%% <dt> `bev2_iterate/2' </dt>
+%% <dd> Fetch the key/metadata/value of a single key from the backend.
+%%      Arguments:
+%%        <ol>
+%%        <li> `BackendRef :: term()' </li>
+%%        <li> `Idx :: integer()', the vnode's index number </li>
+%%        </ol>
+%% </dd>
+%% </dl>
 %% -------------------------------------------------------------------
 -module(riak_kv_vnode).
 -author('Kevin Smith <kevin@basho.com>').
@@ -59,6 +155,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+-define(NUM_KEYS_PER_VNODE_ITERATION, 25).
+
 -record(mrjob, {cachekey :: term(),
                 bkey :: term(),
                 reqid :: term(),
@@ -67,6 +165,8 @@
 -record(state, {idx :: partition(),
                 mod :: module(),
                 modstate :: term(),
+                mod_api_version :: integer(),
+                mod_capabilities :: [term()],
                 mrjobs :: term(),
                 in_handoff = false :: boolean()}).
 
@@ -77,6 +177,17 @@
                   reqid :: non_neg_integer(),
                   bprops :: maybe_improper_list(),
                   prunetime :: undefined | non_neg_integer()}).
+
+-type foldfun() :: fun((tuple(), term(), binary(), term()) -> term()).
+-record(iter, {type :: 'buckets' | 'fold',
+               iter_term :: term(),                  % TODO: better types here
+               foldfun :: foldfun(),
+               foldacc :: term(),
+               foldcont :: fun((term()) -> term()),
+               caller :: term(),
+               req_id :: term(),
+               idx :: term(),
+               bucket_tab :: 'undefined' | ets:tab()}).
 
 %% TODO: add -specs to all public API funcs, this module seems fragile?
 
@@ -159,8 +270,19 @@ init([Index]) ->
     Mod = app_helper:get_env(riak_kv, storage_backend),
     Configuration = app_helper:get_env(riak_kv),
     {ok, ModState} = Mod:start(Index, Configuration),
+    {ModVersion, ModCaps} =
+        try
+            Caps = Mod:capability(ModState, undefined),
+            {proplists:get_value(api_version, Caps), Caps}
+        catch _X:_Y ->
+                error_logger:error_msg("init ~p: ~p ~p at\n~p\n",
+                                      [Index, _X, _Y, erlang:get_stacktrace()]),
+                {1, []}
+        end,
 
-    {ok, #state{idx=Index, mod=Mod, modstate=ModState, mrjobs=dict:new()}}.
+    {ok, #state{idx=Index, mod=Mod, modstate=ModState,
+                mod_api_version = ModVersion, mod_capabilities = ModCaps,
+                mrjobs=dict:new()}}.
 
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
@@ -177,12 +299,21 @@ handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
     do_get(Sender, BKey, ReqId, State);
 handle_command(?KV_MGET_REQ{bkeys=BKeys, req_id=ReqId, from=From}, _Sender, State) ->
     do_mget(From, BKeys, ReqId, State);
+%%
+%% SLF TODO: #riak_kv_listkeys_req_v1{} appears to be used only by
+%%           riak_kv_legacy_vnode.erl ... so can we rip this part out?
+%%
 handle_command(#riak_kv_listkeys_req_v1{bucket=Bucket, req_id=ReqId}, _Sender,
                 State=#state{mod=Mod, modstate=ModState, idx=Idx}) ->
     do_list_bucket(ReqId,Bucket,Mod,ModState,Idx,State);
 handle_command(?KV_LISTKEYS_REQ{bucket=Bucket, req_id=ReqId, caller=Caller}, _Sender,
-               State=#state{mod=Mod, modstate=ModState, idx=Idx}) ->
-    do_list_keys(Caller,ReqId,Bucket,Idx,Mod,ModState),
+               State=#state{mod=Mod, modstate=ModState, idx=Idx,
+                            mod_api_version = Version}) ->
+    if Version == 1 ->
+            do_list_keys(Caller,ReqId,Bucket,Idx,Mod,ModState);
+       Version == 2 ->
+            do_list_keys_v2(Caller,ReqId,Bucket,Idx,Mod,ModState)
+    end,
     {noreply, State};
 
 handle_command(?KV_DELETE_REQ{bkey=BKey, req_id=ReqId}, _Sender,
@@ -227,7 +358,10 @@ handle_command({mapexec_reply, JobId, Result}, _Sender, #state{mrjobs=Jobs}=Stat
                    error ->
                        State
                end,
-    {noreply, NewState}.
+    {noreply, NewState};
+handle_command({iterate_buckets, Iter}, _Sender, State) ->
+    do_iterate_buckets(Iter, State),
+    {noreply, State}.
 
 handle_handoff_command(Req=?FOLD_REQ{}, Sender, State) ->
     handle_command(Req, Sender, State);
@@ -431,8 +565,13 @@ do_get_binary(BKey, Mod, ModState) ->
     Mod:get(ModState,BKey).
 
 
+%%
+%% SLF TODO: #riak_kv_listkeys_req_v1{} appears to be used only by
+%%           riak_kv_legacy_vnode.erl ... so can we rip this part out?
+%%
 %% @private
 do_list_bucket(ReqID,Bucket,Mod,ModState,Idx,State) ->
+    exit(do_list_bucket_rip_me_out_please_pretty_please),
     RetVal = Mod:list_bucket(ModState,Bucket),
     {reply, {kl, RetVal, Idx, ReqID}, State}.
 
@@ -502,6 +641,41 @@ buffer_key_result(Caller, ReqId, Idx, Acc) ->
     end.
 
 %% @private
+do_list_keys_v2(Caller, ReqId, '_', Idx, Mod, ModState) ->
+    IterTerm = Mod:bev2_new_bucket_iterator(ModState, Idx),
+    Tab = ets:new(bucket_filter, [private, set]),
+    Iter = #iter{type = buckets, iter_term = IterTerm,
+                 foldfun = fun list_bucket_folder/4,
+                 foldacc = {Tab, {Caller, ReqId, Idx}, []},
+                 foldcont = fun list_bucket_continuation/1,
+                 caller = Caller, req_id = ReqId, idx = Idx,
+                 bucket_tab = Tab},
+    send_iter_to_self(Iter);
+do_list_keys_v2(Caller, ReqId, Bucket, Idx, Mod, ModState) ->
+    AllKeys = fun(_Key) -> true end,
+    KeyFilt = case Bucket of
+                  %% SLF TODO: put me back: {filter, _Bkt, FiltFun}  -> FiltFun;
+                  {filter, _Bkt, FiltFun}  ->
+                      error_logger:warning_msg("list keys v2: FiltFun ~p for bucket ~p ~p\n", [FiltFun, Bucket, _Bkt]), FiltFun; %% SLF TODO: delete me
+                  _ when is_atom(Bucket)   -> AllKeys;
+                  _ when is_binary(Bucket) -> AllKeys
+              end,
+    IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx, Bucket,
+                                          true, false, false),
+    Fun = fun({_Bucket, Key} = _BKey, _MD, _Value, {Tab, Acc}) ->
+                  case KeyFilt(Key) of
+                      true  -> {Tab, [Key|Acc]};
+                      false -> Acc
+                  end
+          end,
+    Iter = #iter{type = fold, iter_term = IterTerm,
+                 foldfun = Fun,
+                 foldacc = {{Caller, ReqId, Idx}, []},
+                 foldcont = fun list_keys_continuation/1,
+                 caller = Caller, req_id = ReqId, idx = Idx},
+    send_iter_to_self(Iter).
+
+%% @private
 do_fold(Fun, Acc0, _State=#state{mod=Mod, modstate=ModState}) ->
     Mod:fold(ModState, Fun, Acc0).
 
@@ -532,6 +706,61 @@ do_diffobj_put(BKey={Bucket,_}, DiffObj,
             Res;
         _ -> ok
     end.
+
+%% @private
+do_iterate_buckets(#iter{iter_term = IterTerm, foldacc = FoldAcc} = Iter,
+                   State) ->
+    Res = (State#state.mod):bev2_iterate(State#state.modstate, IterTerm),
+    nonb_iterator(Res, FoldAcc, ?NUM_KEYS_PER_VNODE_ITERATION, Iter, State).
+
+nonb_iterator(done, Acc, _Count,
+              #iter{caller = Caller, req_id = ReqId,
+                    idx = Idx, bucket_tab = BucketTab} = Iter,
+              _State) ->
+    (Iter#iter.foldcont)(Acc),
+    Caller ! {ReqId, Idx, done},
+    catch ets:delete(BucketTab);
+nonb_iterator({continue, IterResult, NewIterTerm}, Acc0, Count,
+              Iter, State) ->
+    {BKey, MetaData, Value} = IterResult,
+    Acc1 = (Iter#iter.foldfun)(BKey, MetaData, Value, Acc0),
+    if Count == 0 ->
+            Acc2 = (Iter#iter.foldcont)(Acc1),
+            send_iter_to_self(Iter#iter{iter_term = NewIterTerm,
+                                        foldacc = Acc2});
+       true ->
+            Res = (State#state.mod):bev2_iterate(State#state.modstate,
+                                                 NewIterTerm),
+            nonb_iterator(Res, Acc1, Count - 1, Iter, State)
+    end.
+
+list_bucket_folder(_BKey, _Md, Bucket, {Tab, CRI, Acc0}) ->
+    case ets:member(Tab, Bucket) of
+        true ->
+            {Tab, CRI, Acc0};
+        false ->
+            ets:insert(Tab, {Bucket, true}),
+            {Tab, CRI, [Bucket|Acc0]}
+    end.
+
+list_bucket_continuation({Tab, {Caller, ReqId, Idx} = CRI, Acc}) ->
+    if Acc /= [] -> Caller ! {ReqId, {kl, Idx, Acc}};
+       true      -> ok
+    end,
+    {Tab, CRI, []}.
+
+list_keys_continuation({{Caller, ReqId, Idx} = CRI, Acc}) ->
+    if Acc /= [] -> Caller ! {ReqId, {kl, Idx, Acc}};
+       true      -> ok
+    end,
+    {CRI, []}.
+
+%% fold_continuation(X) ->
+%%     X.
+
+%% @private
+send_iter_to_self(Iter) ->
+    riak_core_vnode:send_command(self(), {iterate_buckets, Iter}).
 
 %% @private
 

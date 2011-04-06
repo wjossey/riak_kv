@@ -28,18 +28,46 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
--export([capability/1,capability/3,
+-export([capability/0,capability/2,
+         capability/1,capability/3, %% TODO delete these two
+         %% TODO: Verify that list/1 is either deprecated or maintained
+         %%       for debugging/testing purposes.  It seems to me that
+         %%       the vnode interface isn't used by riak_kv_vnode at all.
          start/2,stop/1,get/2,put/3,list/1,list_bucket/2,delete/2,
          is_empty/1, drop/1, fold/3, fold_bucket_keys/4, callback/3]).
+%% Backend version 2 API
+-export([bev2_new_bucket_iterator/2, bev2_new_fold_iterator/6,
+         bev2_iterate/2]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 % @type state() = term().
--record(state, {t}).
+-record(state, {
+          t         :: ets:tab(),
+          ordered_p :: boolean()
+         }).
 
+-spec capability() -> [term()].
+
+capability() ->
+    [%% Mandatory
+     {api_version, 2},
+     %% Advisory
+     {has_ordered_keys, maybe},
+     {fold_will_block, false},
+     {list_will_block, false},
+     %% Perhaps helpful hints
+     {keys_and_values_stored_together, true},
+     {vclocks_and_values_stored_together, true}].
+
+-spec capability(term(), 'undefined' | binary()) -> [term()].
+
+capability(SrvRef, Bucket) ->
+    gen_server:call(SrvRef, {capability, Bucket}, infinity).
+
+%% TODO: delete to DELETEME
 -spec capability(atom()) -> boolean() | 'maybe'.
-
 capability(has_ordered_keys) ->
     maybe;
 capability(keys_and_values_stored_together) ->
@@ -50,9 +78,7 @@ capability(fold_will_block) ->
     true; %% SLF TODO: change this
 capability(_) ->
     false.
-
 -spec capability(term(), binary(), atom()) -> boolean().
-
 capability(_State, _Bucket, has_ordered_keys) ->
     false; %% SLF TODO: if table is ordered_set, then true!
 capability(_State, _Bucket, keys_and_values_stored_together) ->
@@ -63,17 +89,19 @@ capability(_State, _Bucket, fold_will_block) ->
     true; %% SLF TODO: change this
 capability(_State, _Bucket, _) ->
     false.
+%%% TODO: DELETEME end
 
 % @spec start(Partition :: integer(), Config :: proplist()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}
 start(Partition, Config) ->
-    TableType = proplists:get_value(table_type, Config, set),
+    TableType = proplists:get_value(ets_backend_table_type, Config, set),
     gen_server:start_link(?MODULE, [Partition, TableType], []).
 
 %% @private
 init([Partition, TableType]) ->
     {ok, #state{t=ets:new(list_to_atom(integer_to_list(Partition)),
-                          [TableType])}}.
+                          [TableType]),
+                ordered_p = (TableType == ordered_set)}}.
 
 %% @private
 handle_cast(_, State) -> {noreply, State}.
@@ -100,7 +128,20 @@ handle_call({fold_bucket_keys, _Bucket, Fun0, Acc}, From, State) ->
     %% We could do something with the Bucket arg, but for this backend
     %% there isn't much point, so we'll do the same thing as the older
     %% API fold.
-    handle_call({fold, Fun0, Acc}, From, State).
+    handle_call({fold, Fun0, Acc}, From, State);
+handle_call({capability, _Bucket}, _From, State) ->
+    Reply = [{has_ordered_keys, State#state.ordered_p}|capability()],
+    {reply, Reply, State};
+handle_call({bev2_new_bucket_iterator, _Idx}, _From, State) ->
+    Reply = {bucket_iterator, fun() -> ets:first(State#state.t) end},
+    {reply, Reply, State};
+handle_call({bev2_new_fold_iterator, Idx, Bucket, WantBKey, WantMd, WantVal},
+            _From, State) ->
+    Reply = make_bev2_fold_iterator(Idx, Bucket, WantBKey, WantMd, WantVal, State),
+    {reply, Reply, State};
+handle_call({bev2_iterate, Iter}, _From, State) ->
+    Reply = do_bev2_iterate(Iter, State),
+    {reply, Reply, State}.
 
 % @spec stop(state()) -> ok | {error, Reason :: term()}
 stop(SrvRef) -> gen_server:call(SrvRef,stop).
@@ -135,6 +176,8 @@ srv_delete(State, BKey) ->
     true = ets:delete(State#state.t, BKey),
     ok.
 
+%% SLF TODO: I don't believe that this function is ever used by the vnode,
+%%           so to heck with mangling it to the new way of doing things.
 % list(state()) -> [riak_object:bkey()]
 list(SrvRef) -> gen_server:call(SrvRef,list).
 srv_list(State) ->
@@ -170,8 +213,20 @@ fold_bucket_keys(SrvRef, Bucket, Fun, Acc0) ->
 callback(_State, _Ref, _Msg) ->
     ok.
 
+bev2_new_bucket_iterator(SrvRef, Idx) ->
+    gen_server:call(SrvRef, {bev2_new_bucket_iterator, Idx}, infinity).
+
+bev2_new_fold_iterator(SrvRef, Idx, Bucket, WantBKey, WantMd, WantVal) ->
+    gen_server:call(SrvRef, {bev2_new_fold_iterator, Idx, Bucket, WantBKey, WantMd, WantVal}, infinity).
+
+bev2_iterate(SrvRef, Iter) ->
+    gen_server:call(SrvRef, {bev2_iterate, Iter}, infinity).
+
 %% @private
-handle_info(_Msg, State) -> {noreply, State}.
+%% TODO: put me back: handle_info(_Msg, State) -> {noreply, State}.
+handle_info(_Msg, State) ->
+    error_logger:error_msg("~s: handle_info: got ~p\n", [?MODULE, _Msg]),
+    {noreply, State}.
 
 %% @private
 terminate(_Reason, _State) -> ok.
@@ -179,18 +234,73 @@ terminate(_Reason, _State) -> ok.
 %% @private
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
+%% @private
+do_bev2_iterate({bucket_iterator, Fun}, S) ->
+    case Fun() of
+        '$end_of_table' ->
+            done;
+        {Bucket, _K} = Key ->
+            {continue, {undefined, undefined, Bucket},
+             {bucket_iterator, fun() -> ets:next(S#state.t, Key) end}}
+    end;
+do_bev2_iterate({fold_iterator,
+                 WantBKey, WantMd, WantVal, GenFun, StopTransFun}, S) ->
+    case StopTransFun(GenFun()) of
+        '$end_of_table' ->
+            done;
+        BK ->
+            [{BK, Val}] = ets:lookup(S#state.t, BK),
+            BKey = if WantBKey -> BK;
+                      true     -> undefined
+                   end,
+            Value = if WantVal -> Val;
+                       true    -> undefined
+                    end,
+            Res = {BKey, undefined, Value},
+            NewGenFun = fun() -> ets:next(S#state.t, BK) end,
+            NewI = {fold_iterator, WantBKey, WantMd, WantVal, NewGenFun,
+                    StopTransFun},
+            {continue, Res, NewI}
+    end.
+
+make_bev2_fold_iterator(_Idx, Bucket, WantBKey, WantMd, WantVal, S) ->
+    GenFun = case Bucket of
+                 undefined ->
+                     fun() -> ets:first(S#state.t) end;
+                 _ when S#state.ordered_p ->
+                     FirstKey = {Bucket, <<>>},
+                     case ets:member(S#state.t, FirstKey) of
+                         true when S#state.ordered_p ->
+                             fun() -> FirstKey end;
+                         false when S#state.ordered_p ->
+                             fun() -> ets:next(S#state.t, FirstKey) end
+                     end;
+                 _ ->
+                     fun() -> ets:first(S#state.t) end
+             end,
+    StopTransFun = if S#state.ordered_p ->
+                           fun({B, _K} = BKey) when B == Bucket ->
+                                   BKey;
+                              (_) ->
+                                   '$end_of_table'
+                           end;
+                      true ->
+                           fun(X) -> X end
+                   end,
+    {fold_iterator, WantBKey, WantMd, WantVal, GenFun, StopTransFun}.
+
 %%
 %% Test
 %%
 -ifdef(TEST).
 
 bogus_type_test() ->
-    %% Weird, try riak_kv_backend:standard_test(?MODULE, [{table_type, bogus3}])
+    %% Weird, try riak_kv_backend:standard_test(?MODULE, [{ets_backend_table_type, bogus3}])
     %%        catch X:Y -> should_be_here end.
     %% ... doesn't catch.  What is EUnit doing?  What am I doing?  ....
     {Pid, Ref} = 
         spawn_monitor(fun() ->
-            riak_kv_backend:standard_test(?MODULE, [{table_type, bogus5}]),
+            riak_kv_backend:standard_test(?MODULE, [{ets_backend_table_type, supposed_to_crash}]),
             exit(should_never_get_here)
         end),
     %% Double-weird, *both* receive clauses are necessary.  {sigh}  It's
