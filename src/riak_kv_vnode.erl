@@ -562,8 +562,8 @@ fs_test_dir() ->
 backend_with_known_key(BackendMod) ->
     dummy_backend(BackendMod),
     {ok, S1} = init([0]),
-    B = <<"f">>,
-    K = <<"b">>,
+    B = <<"bucket">>,
+    K = <<"known_key">>,
     O = riak_object:new(B, K, <<"z">>),
     {noreply, S2} = handle_command(?KV_PUT_REQ{bkey={B,K},
                                                object=O,
