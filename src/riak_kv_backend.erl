@@ -45,7 +45,7 @@ behaviour_info(_Other) ->
     undefined.
 
 %% Queue a callback for the backend after Time ms.
--spec callback_after(integer(), reference(), term()) -> reference().
+-spec callback_after(non_neg_integer(), reference(), term()) -> reference().
 callback_after(Time, Ref, Msg) when is_integer(Time), is_reference(Ref) ->
     riak_core_vnode:send_command_after(Time, {backend_callback, Ref, Msg}).
 

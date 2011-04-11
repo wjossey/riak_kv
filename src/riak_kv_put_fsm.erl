@@ -45,7 +45,7 @@
                 dw :: non_neg_integer(),
                 preflist2 :: riak_core_apl:preflist2(),
                 bkey :: {riak_object:bucket(), riak_object:key()},
-                req_id :: pos_integer(),
+                req_id :: riak_client:req_id(),
                 starttime :: pos_integer(), % start time to send to vnodes
                 replied_w :: list(),
                 replied_dw :: list(),

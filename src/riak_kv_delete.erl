@@ -24,9 +24,9 @@
 
 -module(riak_kv_delete).
 
-%-ifdef(TEST).
+-ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
-%-endif.
+-endif.
 
 -export([delete/6]).
 

@@ -64,7 +64,7 @@
                 reqid :: term(),
                 target :: pid()}).
 
--record(state, {idx :: partition(),
+-record(state, {idx :: chash:partition(),
                 mod :: module(),
                 modstate :: term(),
                 mrjobs :: term(),
@@ -533,7 +533,6 @@ do_diffobj_put(BKey={Bucket,_}, DiffObj,
         _ -> ok
     end.
 
-%% @private
 
 -ifdef(TEST).
 

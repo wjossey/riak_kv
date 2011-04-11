@@ -39,11 +39,10 @@
                   {notfound_ok, boolean()}  |  %% Count notfound reponses as successful.
                   {timeout, pos_integer() | infinity}. %% Timeout for vnode responses
 -type options() :: [option()].
--type req_id() :: non_neg_integer().
 
 -export_type([options/0, option/0]).
 
--record(state, {from :: {raw, req_id(), pid()},
+-record(state, {from :: {raw, riak_client:req_id(), pid()},
                 options=[] :: options(),
                 n :: pos_integer(),
                 r :: pos_integer(),
@@ -51,7 +50,7 @@
                 allowmult :: boolean(),
                 notfound_ok :: boolean(),
                 preflist2 :: riak_core_apl:preflist2(),
-                req_id :: non_neg_integer(),
+                req_id :: riak_client:req_id(),
                 starttime :: pos_integer(),
                 replied_r = [] :: list(),
                 replied_notfound = [] :: list(),
@@ -92,7 +91,7 @@ start_link(ReqId,Bucket,Key,R,Timeout,From) ->
 %%                             in some failure cases.
 %% {notfound_ok, boolean()}  - Count notfound reponses as successful.
 %% {timeout, pos_integer() | infinity} -  Timeout for vnode responses
--spec start_link({raw, req_id(), pid()}, binary(), binary(), options()) ->
+-spec start_link({raw, riak_client:req_id(), pid()}, binary(), binary(), options()) ->
                         {ok, pid()} | {error, any()}.
 start_link(From, Bucket, Key, GetOptions) ->
     gen_fsm:start_link(?MODULE, [From, Bucket, Key, GetOptions], []).
