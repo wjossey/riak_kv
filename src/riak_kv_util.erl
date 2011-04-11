@@ -106,7 +106,7 @@ fallback(Cmd, UpNodes, [{Index,Node}|Pangs], [{_,FN}|Fallbacks], Sent) ->
     end.
 
 
--spec make_request(vnode_req(), partition()) -> #riak_vnode_req_v1{}.
+-spec make_request(vnode_req(), chash:partition()) -> #riak_vnode_req_v1{}.
 make_request(Request, Index) ->
     riak_core_vnode_master:make_request(Request,
                                         {fsm, undefined, self()},

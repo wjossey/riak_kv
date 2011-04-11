@@ -196,7 +196,7 @@ assert(false, Error) -> throw({?MODULE, Error}).
     
 -ifdef(TEST).
 
-% @private
+
 multi_backend_test_() ->
     {foreach,
         fun() ->
@@ -252,7 +252,6 @@ multi_backend_test_() ->
     }.
 
 -ifdef(EQC).
-%% @private
 
 eqc_test() ->
     % Start the ring manager...

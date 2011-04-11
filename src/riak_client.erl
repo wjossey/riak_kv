@@ -22,7 +22,7 @@
 
 %% @doc object used for access into the riak system
 
--module(riak_client, [Node,ClientId]).
+-module(riak_client, [Node, ClientId]).
 -author('Justin Sheehy <justin@basho.com>').
 
 -export([mapred/2,mapred/3,mapred/4]).
@@ -49,7 +49,10 @@
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_ERRTOL, 0.00003).
 
--type riak_client() :: term().
+-export_type([riak_client/0, req_id/0]).
+
+-type riak_client() :: {riak_client, {node(), <<_:32>>}}.
+-type req_id() :: non_neg_integer().
 
 %% @spec mapred(Inputs :: riak_kv_mapred_term:mapred_inputs(),
 %%              Query :: [riak_kv_mapred_query:mapred_queryterm()]) ->
@@ -215,6 +218,11 @@ mapred_dynamic_inputs_stream(FSMPid, InputDef, Timeout) ->
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as the default
 %%      R-value for the nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
+-spec get(riak_object:bucket(), riak_object:key()) ->
+                 {ok, riak_object:riak_object()} |
+                 {ok, riak_object:riak_object(), [any()]} |
+                 {error, any()} |
+                 {error, any(), [any()]}.
 get(Bucket, Key) -> 
     get(Bucket, Key, []).
 
@@ -226,9 +234,9 @@ get(Bucket, Key) ->
 %%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R-value for the nodes
 %%      have responded with a value or error.
--spec get(binary(), binary(), riak_kv_get_fsm:options()) ->
-                 {ok, any()} | %% TODO: Replace any() with opaque type for riak_object
-                 {ok, any(), [any()]} |
+-spec get(riak_object:bucket(), riak_object:key(), riak_kv_get_fsm:options()) ->
+                 {ok, riak_object:riak_object()} | %% TODO: Replace any() with opaque type for riak_object
+                 {ok, riak_object:riak_object(), [any()]} |
                  {error, any()} |
                  {error, any(), [any()]}.
 get(Bucket, Key, Options) when is_list(Options) ->

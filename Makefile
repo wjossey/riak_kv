@@ -20,7 +20,7 @@ distclean: clean
 eunit:
 	./rebar skip_deps=true eunit
 
-docs:
+docs: deps compile
 	./rebar skip_deps=true doc
 
 dialyzer: compile
