@@ -263,6 +263,15 @@ do_bev2_iterate({fold_iterator,
             {continue, Res, NewI}
     end.
 
+%% TODO: Add to docs: This iterator *may* return keys that are not
+%%                    in the requested bucket.
+%%    To avoid this feature, I believe that we need to return another
+%%    value to the caller, e.g. {continue, NewCont}, to allow the
+%%    caller to manage how much time it wants to spend folding.  This
+%%    new continuation tells the caller that nothing matched this time.
+%%    Otherwise, we could be folding for hours before we find a key that
+%%    is in the desired bucket.
+
 make_bev2_fold_iterator(_Idx, Bucket, WantBKey, WantMd, WantVal, S) ->
     GenFun = case Bucket of
                  undefined ->

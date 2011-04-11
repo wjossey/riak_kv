@@ -275,6 +275,7 @@ init([Index]) ->
             Caps = Mod:capability(ModState, undefined),
             {proplists:get_value(api_version, Caps), Caps}
         catch _X:_Y ->
+                %% TODO: delete this message.
                 error_logger:error_msg("init ~p: ~p ~p at\n~p\n",
                                       [Index, _X, _Y, erlang:get_stacktrace()]),
                 {1, []}
@@ -571,7 +572,7 @@ do_get_binary(BKey, Mod, ModState) ->
 %%
 %% @private
 do_list_bucket(ReqID,Bucket,Mod,ModState,Idx,State) ->
-    exit(do_list_bucket_rip_me_out_please_pretty_please),
+    %%TODO: exit(do_list_bucket_rip_me_out_please_pretty_please),
     RetVal = Mod:list_bucket(ModState,Bucket),
     {reply, {kl, RetVal, Idx, ReqID}, State}.
 
@@ -656,17 +657,21 @@ do_list_keys_v2(Caller, ReqId, Bucket, Idx, Mod, ModState) ->
     KeyFilt = case Bucket of
                   %% SLF TODO: put me back: {filter, _Bkt, FiltFun}  -> FiltFun;
                   {filter, _Bkt, FiltFun}  ->
-                      error_logger:warning_msg("list keys v2: FiltFun ~p for bucket ~p ~p\n", [FiltFun, Bucket, _Bkt]), FiltFun; %% SLF TODO: delete me
+                      error_logger:warning_msg("list keys v2: FiltFun ~p for bucket ~p ~p\n", [FiltFun, Bucket, _Bkt]), FiltFun; %% SLF TODO: restore prev line!
                   _ when is_atom(Bucket)   -> AllKeys;
                   _ when is_binary(Bucket) -> AllKeys
               end,
+    %% NOTE: This iterator may return BKeys outside of the requested bucket.
     IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx, Bucket,
                                           true, false, false),
-    Fun = fun({_Bucket, Key} = _BKey, _MD, _Value, {Tab, Acc}) ->
+    Fun = fun({FromBucket, Key} = _BKey, _MD, _Value, {Tab, Acc})
+               when FromBucket == Bucket ->
                   case KeyFilt(Key) of
                       true  -> {Tab, [Key|Acc]};
                       false -> Acc
-                  end
+                  end;
+             (_BKey, _MD, _Value, TabAcc) ->    % Not in the requested bucket
+                  TabAcc
           end,
     Iter = #iter{type = fold, iter_term = IterTerm,
                  foldfun = Fun,
