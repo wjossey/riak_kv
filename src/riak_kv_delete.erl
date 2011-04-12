@@ -30,11 +30,14 @@
 
 -export([delete/6]).
 
-%% @spec delete(ReqId :: binary(), riak_object:bucket(), riak_object:key(),
-%%             RW :: integer(), TimeoutMillisecs :: integer(), Client :: pid())
-%%           -> term()
 %% @doc Delete the object at Bucket/Key.  Direct return value is uninteresting,
 %%      see riak_client:delete/3 for expected gen_server replies to Client.
+-spec delete(riak_client:req_id(), riak_object:bucket(),
+             riak_object:key(),
+             riak_client:r_val(),pos_integer(), pid()) ->
+                    {riak_client:req_id(), ok} |
+                    {riak_client:req_id(), {error, {rw_val_violation, riak_client:r_val()}}} |
+                    {riak_client:req_id(), {error, notfound}}.
 delete(ReqId,Bucket,Key,RW0,Timeout,Client) ->           
     RealStartTime = riak_core_util:moment(),
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),

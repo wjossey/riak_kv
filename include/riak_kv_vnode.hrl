@@ -1,42 +1,42 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
 -record(riak_kv_put_req_v1, {
-          bkey :: {binary(),binary()},
-          object :: term(),
-          req_id :: non_neg_integer(),
+          bkey :: riak_object:bkey(),
+          object :: riak_object:riak_object(),
+          req_id :: riak_client:req_id(),
           start_time :: non_neg_integer(),
           options :: list()}).
 
 -record(riak_kv_get_req_v1, {
-          bkey :: {binary(), binary()},
-          req_id :: non_neg_integer()}).
+          bkey :: riak_object:bkey(),
+          req_id :: riak_client:req_id()}).
 
 -record(riak_kv_mget_req_v1, {
-          bkeys :: list({binary(), binary()}),
-          req_id :: non_neg_integer(),
+          bkeys :: [riak_object:bkey()],
+          req_id :: riak_client:req_id(),
           from :: term()}).
 
 -record(riak_kv_listkeys_req_v1, {
-          bucket :: binary(),
-          req_id :: non_neg_integer()}).
+          bucket :: riak_object:bucket(),
+          req_id :: riak_client:req_id()}).
 
 -record(riak_kv_listkeys_req_v2, {
-          bucket :: binary()|'_'|tuple(),
-          req_id :: non_neg_integer(),
+          bucket :: riak_object:bucket()|'_'|tuple(),
+          req_id :: riak_client:req_id(),
           caller :: pid()}).
 
 -record(riak_kv_delete_req_v1, {
-          bkey :: {binary(), binary()},
-          req_id :: non_neg_integer()}).
+          bkey :: riak_object:bkey(),
+          req_id :: riak_client:req_id()}).
 
 -record(riak_kv_map_req_v1, {
-          bkey :: {binary(), binary()},
+          bkey :: riak_object:bkey(),
           qterm :: term(),
           keydata :: term(),
           from :: term()}).
 
 -record(riak_kv_vclock_req_v1, {
-          bkeys = [] :: [{binary(), binary()}]
+          bkeys = [] :: [riak_object:bkey()]
          }).
 
 -define(KV_PUT_REQ, #riak_kv_put_req_v1).

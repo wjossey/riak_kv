@@ -49,10 +49,16 @@
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_ERRTOL, 0.00003).
 
--export_type([riak_client/0, req_id/0]).
+-export_type([riak_client/0, client_id/0, req_id/0, n_val/0, r_val/0, w_val/0, 
+              quorum_type/0]).
 
--type riak_client() :: {riak_client, {node(), <<_:32>>}}.
+-type riak_client() :: {riak_client, node(), client_id()}.
+-type client_id() :: <<_:32>>.
 -type req_id() :: non_neg_integer().
+-type n_val() :: pos_integer().
+-type r_val() :: one | quorum | all | default | pos_integer().
+-type w_val() :: one | quorum | all | default | pos_integer().
+-type quorum_type() :: r|w|rw|pr|pw|dw.
 
 %% @spec mapred(Inputs :: riak_kv_mapred_term:mapred_inputs(),
 %%              Query :: [riak_kv_mapred_query:mapred_queryterm()]) ->
@@ -209,12 +215,6 @@ mapred_dynamic_inputs_stream(FSMPid, InputDef, Timeout) ->
             throw({invalid_inputdef, InputDef})
     end.
 
-%% @spec get(riak_object:bucket(), riak_object:key()) ->
-%%       {ok, riak_object:riak_object()} |
-%%       {error, notfound} |
-%%       {error, timeout} |
-%%       {error, {n_val_violation, N::integer()}} |
-%%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as the default
 %%      R-value for the nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
@@ -226,16 +226,11 @@ mapred_dynamic_inputs_stream(FSMPid, InputDef, Timeout) ->
 get(Bucket, Key) -> 
     get(Bucket, Key, []).
 
-%% @spec get(riak_object:bucket(), riak_object:key(), options()) ->
-%%       {ok, riak_object:riak_object()} |
-%%       {error, notfound} |
-%%       {error, timeout} |
-%%       {error, {n_val_violation, N::integer()}} |
-%%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R-value for the nodes
 %%      have responded with a value or error.
--spec get(riak_object:bucket(), riak_object:key(), riak_kv_get_fsm:options()) ->
-                 {ok, riak_object:riak_object()} | %% TODO: Replace any() with opaque type for riak_object
+-spec get(
+        riak_object:bucket(), riak_object:key(), riak_kv_get_fsm:options() | r_val()) ->
+                 {ok, riak_object:riak_object()} |
                  {ok, riak_object:riak_object(), [any()]} |
                  {error, any()} |
                  {error, any(), [any()]}.
@@ -268,6 +263,11 @@ get(Bucket, Key, R) ->
 %%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.
+-spec get(riak_object:bucket(), riak_object:key(), r_val(), non_neg_integer()) ->
+                 {ok, riak_object:riak_object()} |
+                 {ok, riak_object:riak_object(), [any()]} |
+                 {error, any()} |
+                 {error, any(), [any()]}.
 get(Bucket, Key, R, Timeout) when is_binary(Bucket), is_binary(Key),
                                   (is_atom(R) or is_integer(R)),
                                   is_integer(Timeout) ->
@@ -367,6 +367,7 @@ delete(Bucket,Key,RW) -> delete(Bucket,Key,RW,?DEFAULT_TIMEOUT).
 %%       {error, Err :: term()}
 %% @doc Delete the object at Bucket/Key.  Return a value as soon as RW
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.
+-spec delete(riak_object:bucket(), riak_object:key(), r_val(), pos_integer()) -> any().
 delete(Bucket,Key,RW,Timeout) ->
     Me = self(),
     ReqId = mk_reqid(),
