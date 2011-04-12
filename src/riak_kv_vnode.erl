@@ -362,7 +362,9 @@ handle_command({mapexec_reply, JobId, Result}, _Sender, #state{mrjobs=Jobs}=Stat
     {noreply, NewState};
 handle_command({iterate_buckets, Iter}, _Sender, State) ->
     do_iterate_buckets(Iter, State),
-    {noreply, State}.
+    {noreply, State};
+handle_command(test_shutdown_quietly, _Sender, State) ->
+    {stop, normal, State}.
 
 handle_handoff_command(Req=?FOLD_REQ{}, Sender, State) ->
     handle_command(Req, Sender, State);
@@ -808,6 +810,24 @@ backend_with_known_key(BackendMod) ->
                                    S1),
     {S2, B, K}.
 
+live_backend_with_known_key(BackendMod) ->
+    dummy_backend(BackendMod),
+    Index = 0,
+    {ok, Pid} = test_vnode(Index),
+    B = <<"bucket">>,
+    K = <<"known_key">>,
+    O = riak_object:new(B, K, <<"z">>),
+    _Sender = {raw, 456, self()},
+    VnodeReq = ?KV_PUT_REQ{bkey={B,K},
+                           object=O,
+                           req_id=123,
+                           start_time=riak_core_util:moment(),
+                           options=[]},
+    Req = VnodeReq, %%riak_core_vnode_master:make_request(VnodeReq, Sender, Index),
+    riak_core_vnode:send_command(Pid, Req),
+    timer:sleep(100),
+    {Pid, B, K}.
+
 must_be_first_setup_stuff_test() ->
     application:start(sasl),
     dets_server:stop(),
@@ -887,13 +907,21 @@ list_buckets_test_() ->
     }.
 
 list_buckets_test_i(BackendMod) ->
-    {S, B, _K} = backend_with_known_key(BackendMod),
+    {Pid, B, _K} = live_backend_with_known_key(BackendMod),
     Caller = new_result_listener(),
-    handle_command(?KV_LISTKEYS_REQ{bucket='_',
-                                    req_id=124,
-                                    caller=Caller},
-                   {raw, 456, self()}, S),
-    ?assertEqual({ok, [B]}, results_from_listener(Caller)),
+    VnodeReq = ?KV_LISTKEYS_REQ{bucket='_',
+                                req_id=124,
+                                caller=Caller},
+    riak_core_vnode:send_command(Pid, VnodeReq),
+    try
+        %% send_command() is async, but sleep isn't necessary because
+        %% the listener will fetch all available results from the
+        %% vnode before trying to receive the request from
+        %% results_from_listener().
+        ?assertEqual({ok, [B]}, results_from_listener(Caller))
+    after
+        riak_core_vnode:send_command(Pid, test_shutdown_quietly)
+    end,
     flush_msgs().
 
 filter_keys_test() ->
