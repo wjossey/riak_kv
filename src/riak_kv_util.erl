@@ -105,7 +105,7 @@ fallback(Cmd, UpNodes, [{Index,Node}|Pangs], [{_,FN}|Fallbacks], Sent) ->
     end.
 
 
--spec make_request(vnode_req(), chash:partition()) -> #riak_vnode_req_v1{}.
+-spec make_request(T, chash:partition()) -> vnode_req(T).
 make_request(Request, Index) ->
     riak_core_vnode_master:make_request(Request,
                                         {fsm, undefined, self()},
@@ -122,7 +122,7 @@ get_default_rw_val(Type, BucketProps) ->
 
 -spec expand_rw_value(riak_client:quorum_type(),
                       riak_client:r_val()|riak_client:w_val(),
-                      list(),
+                      riak_core_bucket:bucket_props(),
                       riak_client:n_val()) -> pos_integer() | error.
 expand_rw_value(Type, default, BucketProps, N) ->
     normalize_rw_value(get_default_rw_val(Type, BucketProps), N);    
