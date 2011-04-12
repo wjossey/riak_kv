@@ -43,21 +43,20 @@
 %% Public API
 %% ===================================================================
 
-%% @spec is_x_deleted(riak_object:riak_object()) -> boolean()
 %% @doc 'true' if all contents of the input object are marked
 %%      as deleted; 'false' otherwise
 %% @equiv obj_not_deleted(Obj) == undefined
+-spec is_x_deleted(riak_object:riak_object()) -> boolean().
 is_x_deleted(Obj) ->
     case obj_not_deleted(Obj) of
         undefined -> true;
         _ -> false
     end.
 
-%% @spec obj_not_deleted(riak_object:riak_object()) ->
-%%          undefined|riak_object:riak_object()
 %% @doc Determine whether all contents of an object are marked as
 %%      deleted.  Return is the atom 'undefined' if all contents
 %%      are marked deleted, or the input Obj if any of them are not.
+-spec obj_not_deleted(riak_object:riak_object()) -> undefined | riak_object:riak_object().
 obj_not_deleted(Obj) ->
     case [{M, V} || {M, V} <- riak_object:get_contents(Obj),
                     dict:is_key(<<"X-Riak-Deleted">>, M) =:= false] of
@@ -120,7 +119,11 @@ get_default_rw_val(Type, BucketProps) ->
         {Val, undefined} -> Val;
         {Val1, _Val2} -> Val1
     end.
-            
+
+-spec expand_rw_value(riak_client:quorum_type(),
+                      riak_client:r_val()|riak_client:w_val(),
+                      list(),
+                      riak_client:n_val()) -> pos_integer() | error.
 expand_rw_value(Type, default, BucketProps, N) ->
     normalize_rw_value(get_default_rw_val(Type, BucketProps), N);    
 expand_rw_value(_Type, Val, _BucketProps, N) ->

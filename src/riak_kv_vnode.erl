@@ -60,8 +60,8 @@
 -endif.
 
 -record(mrjob, {cachekey :: term(),
-                bkey :: term(),
-                reqid :: term(),
+                bkey :: riak_object:bkey(),
+                reqid :: riak_client:client_id(),
                 target :: pid()}).
 
 -record(state, {idx :: chash:partition(),
@@ -72,21 +72,23 @@
 
 -record(putargs, {returnbody :: boolean(),
                   lww :: boolean(),
-                  bkey :: {binary(), binary()},
-                  robj :: term(),
-                  reqid :: non_neg_integer(),
-                  bprops :: maybe_improper_list(),
+                  bkey :: riak_object:bkey(),
+                  robj :: riak_object:riak_object(),
+                  reqid :: riak_client:req_id(),
+                  bprops :: riak_core_bucket:bucket_props(),
                   prunetime :: undefined | non_neg_integer()}).
 
 %% TODO: add -specs to all public API funcs, this module seems fragile?
 
 %% API
+-spec start_vnode(chash:partition()) -> {ok, pid()}.
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, riak_kv_vnode).
 
 test_vnode(I) ->
     riak_core_vnode:start_link(riak_kv_vnode, I, infinity).
 
+-spec get(riak_core_apl:preflist(), riak_object:bkey(), riak_client:req_id()) -> ok.
 get(Preflist, BKey, ReqId) ->
     Req = ?KV_GET_REQ{bkey=BKey,
                       req_id=ReqId},
@@ -97,6 +99,7 @@ get(Preflist, BKey, ReqId) ->
                                    {fsm, undefined, self()},
                                    riak_kv_vnode_master).
 
+-spec mget(riak_core_apl:preflist(), [riak_object:bkey()], riak_client:req_id()) -> ok.
 mget(Preflist, BKeys, ReqId) ->
     Req = ?KV_MGET_REQ{bkeys=BKeys,
                        req_id=ReqId,
@@ -105,6 +108,7 @@ mget(Preflist, BKeys, ReqId) ->
                                    Req,
                                    riak_kv_vnode_master).
 
+-spec del(riak_core_apl:preflist(), riak_object:bkey(), riak_client:req_id()) -> ok.
 del(Preflist, BKey, ReqId) ->
     riak_core_vnode_master:command(Preflist,
                                    ?KV_DELETE_REQ{bkey=BKey,
@@ -113,9 +117,15 @@ del(Preflist, BKey, ReqId) ->
 
 %% Issue a put for the object to the preflist, expecting a reply
 %% to an FSM.
+-spec put(riak_core_apl:preflist(), riak_object:bkey(),
+          riak_object:riak_object(), riak_client:req_id(),
+          pos_integer(), list()) -> ok.
 put(Preflist, BKey, Obj, ReqId, StartTime, Options) when is_integer(StartTime) ->
     put(Preflist, BKey, Obj, ReqId, StartTime, Options, {fsm, undefined, self()}).
 
+-spec put(riak_core_apl:preflist(), riak_object:bkey(),
+          riak_object:riak_object(), riak_client:req_id(),
+          pos_integer(), list(), sender()) -> ok.
 put(Preflist, BKey, Obj, ReqId, StartTime, Options, Sender)
   when is_integer(StartTime) ->
     riak_core_vnode_master:command(Preflist,
@@ -129,9 +139,14 @@ put(Preflist, BKey, Obj, ReqId, StartTime, Options, Sender)
                                    riak_kv_vnode_master).
 
 %% Do a put without sending any replies
+-spec readrepair(riak_core_apl:preflist(), riak_object:bkey(),
+                 riak_object:riak_object(), riak_client:req_id(),
+                 pos_integer(), list()) -> ok.
 readrepair(Preflist, BKey, Obj, ReqId, StartTime, Options) ->
     put(Preflist, BKey, Obj, ReqId, StartTime, [rr | Options], ignore).
 
+-spec list_keys(riak_core_apl:preflist(), riak_client:req_id(), 
+                 term(), riak_object:bucket()) -> ok.
 list_keys(Preflist, ReqId, Caller, Bucket) ->
   riak_core_vnode_master:command(Preflist,
                                  ?KV_LISTKEYS_REQ{

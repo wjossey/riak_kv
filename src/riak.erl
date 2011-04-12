@@ -72,6 +72,8 @@ get_app_env(Opt, Default) ->
 
 %% @spec local_client() -> {ok, Client :: riak_client()}
 %% @equiv local_client(undefined)
+-spec local_client() -> {ok, riak_client:riak_client()} | 
+                        {error, {could_not_reach_node, node()}}.
 local_client() ->
     local_client(undefined).
 
@@ -81,12 +83,16 @@ local_client() ->
 %%      32-bit binary will be created from ClientId by phash2/1.
 %%      If ClientId is the atom 'undefined', a random ClientId will
 %%      be chosen.
+-spec local_client(term()) -> {ok, riak_client:riak_client()} | 
+                              {error, {could_not_reach_node, node()}}.
 local_client(ClientId) ->
     client_connect(node(), ClientId).
 
 %% @spec client_connect(Node :: node())
 %%        -> {ok, Client :: riak_client()} | {error, timeout}
 %% @equiv client_connect(Node, undefined)
+-spec client_connect(node()) -> {ok, riak_client:riak_client()} |
+                                {error, {could_not_reach_node, node()}}.
 client_connect(Node) -> 
     client_connect(Node, undefined).
 
@@ -98,6 +104,9 @@ client_connect(Node) ->
 %%      32-bit binary will be created from ClientId by phash2/1.
 %%      If ClientId is the atom 'undefined', a random ClientId will
 %%      be chosen.
+-spec client_connect(node(),riak_client:client_id()|undefined|term()) -> 
+                            {error, {could_not_reach_node, node()}} |
+                            {ok, riak_client:riak_client()}.
 client_connect(Node, ClientId= <<_:32>>) ->
     % Make sure we can reach this node...
     case net_adm:ping(Node) of
@@ -140,6 +149,7 @@ client_test(Node) ->
 %%
 %% @doc Join the ring found on the specified remote node
 %%
+-spec join(string()|node()) -> ok | {error, different_ring_sizes} | {error, not_reachable}.
 join(NodeStr) when is_list(NodeStr) ->
     join(riak_core_util:str_to_node(NodeStr));
 join(Node) when is_atom(Node) ->

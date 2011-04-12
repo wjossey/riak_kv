@@ -32,7 +32,7 @@
          handle_info/3, terminate/3, code_change/4]).
 -export([prepare/2,validate/2,execute/2,waiting_vnode_r/2,waiting_read_repair/2]).
 
--type option() :: {r, pos_integer()} |         %% Minimum number of successful responses
+-type option() :: {r, riak_client:r_val()} |         %% Minimum number of successful responses
                   {pr, non_neg_integer()} |    %% Minimum number of primary vnodes participating
                   {basic_quorum, boolean()} |  %% Whether to use basic quorum (return early 
                                                %% in some failure cases.
@@ -44,7 +44,7 @@
 
 -record(state, {from :: {raw, riak_client:req_id(), pid()},
                 options=[] :: options(),
-                n :: pos_integer(),
+                n :: riak_client:n_val(),
                 r :: pos_integer(),
                 fail_threshold :: non_neg_integer(),
                 allowmult :: boolean(),
