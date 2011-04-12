@@ -368,8 +368,8 @@ handle_command({mapexec_reply, JobId, Result}, _Sender, #state{mrjobs=Jobs}=Stat
                        State
                end,
     {noreply, NewState};
-handle_command({iterate_buckets, Iter}, _Sender, State) ->
-    do_iterate_buckets(Iter, State),
+handle_command({iterate_over_backend, Iter}, _Sender, State) ->
+    do_iterate_over_backend(Iter, State),
     {noreply, State};
 handle_command(test_shutdown_quietly, _Sender, State) ->
     {stop, normal, State}.
@@ -656,20 +656,19 @@ do_list_keys_v2(Caller, ReqId, '_', Idx, Mod, ModState) ->
     IterTerm = Mod:bev2_new_bucket_iterator(ModState, Idx),
     Tab = ets:new(bucket_filter, [private, set]),
     Iter = #iter{type = buckets, iter_term = IterTerm,
-                 foldfun = fun list_bucket_folder/4,
+                 foldfun = fun list_bucket_fold_er/4,
                  foldacc = {Tab, {Caller, ReqId, Idx}, []},
                  foldcont = fun list_bucket_continuation/1,
                  caller = Caller, req_id = ReqId, idx = Idx,
                  bucket_tab = Tab},
     send_iter_to_self(Iter);
-do_list_keys_v2(Caller, ReqId, Bucket, Idx, Mod, ModState) ->
+do_list_keys_v2(Caller, ReqId, Bucket0, Idx, Mod, ModState) ->
     AllKeys = fun(_Key) -> true end,
-    KeyFilt = case Bucket of
-                  {filter, _Bkt, FiltFun}  -> FiltFun;
-                  %% {filter, _Bkt, FiltFun}  ->
-                  %%     error_logger:warning_msg("list keys v2: FiltFun ~p for bucket ~p ~p\n", [FiltFun, Bucket, _Bkt]), FiltFun; %% SLF TODO: delete this
-                  _ when is_atom(Bucket)   -> AllKeys;
-                  _ when is_binary(Bucket) -> AllKeys
+    %% Recall: bucket() type is 'undefined' | binary()
+    {Bucket, KeyFilt} = case Bucket0 of
+                            {filter, Bkt, FiltFun}    -> {Bkt, FiltFun};
+                            _ when is_atom(Bucket0)   -> {Bucket0, AllKeys};
+                            _ when is_binary(Bucket0) -> {Bucket0, AllKeys}
               end,
     %% NOTE: This iterator may return BKeys outside of the requested bucket.
     IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx, Bucket,
@@ -678,7 +677,7 @@ do_list_keys_v2(Caller, ReqId, Bucket, Idx, Mod, ModState) ->
                when FromBucket == Bucket ->
                   case KeyFilt(Key) of
                       true  -> {Tab, [Key|Acc]};
-                      false -> Acc
+                      false -> {Tab, Acc}
                   end;
              (_BKey, _MD, _Value, TabAcc) ->    % Not in the requested bucket
                   TabAcc
@@ -729,8 +728,8 @@ do_diffobj_put(BKey={Bucket,_}, DiffObj,
     end.
 
 %% @private
-do_iterate_buckets(#iter{iter_term = IterTerm, foldacc = FoldAcc} = Iter,
-                   State) ->
+do_iterate_over_backend(#iter{iter_term = IterTerm, foldacc = FoldAcc} = Iter,
+                        State) ->
     Res = (State#state.mod):bev2_iterate(State#state.modstate, IterTerm),
     nonb_iterator(Res, FoldAcc, ?NUM_KEYS_PER_VNODE_ITERATION, Iter, State).
 
@@ -755,7 +754,7 @@ nonb_iterator({continue, IterResult, NewIterTerm}, Acc0, Count,
             nonb_iterator(Res, Acc1, Count - 1, Iter, State)
     end.
 
-list_bucket_folder(_BKey, _Md, Bucket, {Tab, CRI, Acc0}) ->
+list_bucket_fold_er(_BKey, _Md, Bucket, {Tab, CRI, Acc0}) ->
     case ets:member(Tab, Bucket) of
         true ->
             {Tab, CRI, Acc0};
@@ -781,7 +780,7 @@ list_keys_continuation({{Caller, ReqId, Idx} = CRI, Acc}) ->
 
 %% @private
 send_iter_to_self(Iter) ->
-    riak_core_vnode:send_command(self(), {iterate_buckets, Iter}).
+    riak_core_vnode:send_command(self(), {iterate_over_backend, Iter}).
 
 %% @private
 
@@ -808,21 +807,6 @@ dets_test_dir() ->
 
 fs_test_dir() ->
     "./test.fs-temp-data".
-
-backend_with_known_key(BackendMod) ->
-    dummy_backend(BackendMod),
-    {ok, S1} = init([0]),
-    B = <<"bucket">>,
-    K = <<"known_key">>,
-    O = riak_object:new(B, K, <<"z">>),
-    {noreply, S2} = handle_command(?KV_PUT_REQ{bkey={B,K},
-                                               object=O,
-                                               req_id=123,
-                                               start_time=riak_core_util:moment(),
-                                               options=[]},
-                                   {raw, 456, self()},
-                                   S1),
-    {S2, B, K}.
 
 live_backend_with_known_key(BackendMod) ->
     dummy_backend(BackendMod),
@@ -939,32 +923,35 @@ list_buckets_test_i(BackendMod) ->
     flush_msgs().
 
 filter_keys_test() ->
-    {S, B, K} = backend_with_known_key(riak_kv_ets_backend),
+    {Pid, B, K} = live_backend_with_known_key(riak_kv_ets_backend),
 
     Caller1 = new_result_listener(),
-    handle_command(?KV_LISTKEYS_REQ{
-                      bucket={filter,B,fun(_) -> true end},
-                      req_id=124,
-                      caller=Caller1},
-                   {raw, 456, self()}, S),
-    ?assertEqual({ok, [K]}, results_from_listener(Caller1)),
+    VnodeReq1 = ?KV_LISTKEYS_REQ{
+                   bucket={filter,B,fun(_X) -> true end},
+                   req_id=124,
+                   caller=Caller1},
 
     Caller2 = new_result_listener(),
-    handle_command(?KV_LISTKEYS_REQ{
-                      bucket={filter,B,fun(_) -> false end},
-                      req_id=125,
-                      caller=Caller2},
-                   {raw, 456, self()}, S),
-    ?assertEqual({ok, []}, results_from_listener(Caller2)),
+    VnodeReq2 = ?KV_LISTKEYS_REQ{
+                   bucket={filter,B,fun(_) -> false end},
+                   req_id=125,
+                   caller=Caller2},
 
     Caller3 = new_result_listener(),
-    handle_command(?KV_LISTKEYS_REQ{
-                      bucket={filter,<<"g">>,fun(_) -> true end},
-                      req_id=126,
-                      caller=Caller3},
-                   {raw, 456, self()}, S),
-    ?assertEqual({ok, []}, results_from_listener(Caller3)),
-
+    VnodeReq3 = ?KV_LISTKEYS_REQ{
+                   bucket={filter,<<"g">>,fun(_) -> true end},
+                   req_id=126,
+                   caller=Caller3},
+    try
+        riak_core_vnode:send_command(Pid, VnodeReq1),
+        ?assertEqual({ok, [K]}, results_from_listener(Caller1)),
+        riak_core_vnode:send_command(Pid, VnodeReq2),
+        ?assertEqual({ok, []}, results_from_listener(Caller2)),
+        riak_core_vnode:send_command(Pid, VnodeReq3),
+        ?assertEqual({ok, []}, results_from_listener(Caller3))
+    after
+        riak_core_vnode:send_command(Pid, test_shutdown_quietly)
+    end,
     flush_msgs().
 
 must_be_last_cleanup_stuff_test() ->
