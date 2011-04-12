@@ -122,6 +122,7 @@
 -behaviour(riak_core_vnode).
 
 %% API
+-compile(export_all). %% SLF TODO: delete this line
 -export([test_vnode/1, put/7]).
 -export([start_vnode/1,
          get/3,
@@ -309,7 +310,7 @@ handle_command(#riak_kv_listkeys_req_v1{bucket=Bucket, req_id=ReqId}, _Sender,
     do_list_bucket(ReqId,Bucket,Mod,ModState,Idx,State);
 handle_command(?KV_LISTKEYS_REQ{bucket=Bucket, req_id=ReqId, caller=Caller}, _Sender,
                State=#state{mod=Mod, modstate=ModState, idx=Idx,
-                            mod_api_version = Version}) ->
+                            mod_api_version=Version}) ->
     if Version == 1 ->
             do_list_keys(Caller,ReqId,Bucket,Idx,Mod,ModState);
        Version == 2 ->
@@ -329,9 +330,16 @@ handle_command(?KV_DELETE_REQ{bkey=BKey, req_id=ReqId}, _Sender,
     end;
 handle_command(?KV_VCLOCK_REQ{bkeys=BKeys}, _Sender, State) ->
     {reply, do_get_vclocks(BKeys, State), State};
-handle_command(?FOLD_REQ{foldfun=Fun, acc0=Acc},_Sender,State) ->
-    Reply = do_fold(Fun, Acc, State),
-    {reply, Reply, State};
+handle_command(?FOLD_REQ{foldfun=Fun, acc0=Acc}, Sender,
+               #state{mod=Mod, modstate=ModState, idx=Idx,
+                      mod_api_version=Version} = State) ->
+    if Version == 1 ->
+            Reply = do_fold(Fun, Acc, State),
+            {reply, Reply, State};
+       Version == 2 ->
+            do_fold_v2(Sender, Fun, Acc, Mod, ModState, Idx),
+            {noreply, State}
+    end;
 
 %% Commands originating from inside this vnode
 handle_command({backend_callback, Ref, Msg}, _Sender,
@@ -657,9 +665,9 @@ do_list_keys_v2(Caller, ReqId, '_', Idx, Mod, ModState) ->
 do_list_keys_v2(Caller, ReqId, Bucket, Idx, Mod, ModState) ->
     AllKeys = fun(_Key) -> true end,
     KeyFilt = case Bucket of
-                  %% SLF TODO: put me back: {filter, _Bkt, FiltFun}  -> FiltFun;
-                  {filter, _Bkt, FiltFun}  ->
-                      error_logger:warning_msg("list keys v2: FiltFun ~p for bucket ~p ~p\n", [FiltFun, Bucket, _Bkt]), FiltFun; %% SLF TODO: restore prev line!
+                  {filter, _Bkt, FiltFun}  -> FiltFun;
+                  %% {filter, _Bkt, FiltFun}  ->
+                  %%     error_logger:warning_msg("list keys v2: FiltFun ~p for bucket ~p ~p\n", [FiltFun, Bucket, _Bkt]), FiltFun; %% SLF TODO: delete this
                   _ when is_atom(Bucket)   -> AllKeys;
                   _ when is_binary(Bucket) -> AllKeys
               end,
@@ -685,6 +693,12 @@ do_list_keys_v2(Caller, ReqId, Bucket, Idx, Mod, ModState) ->
 %% @private
 do_fold(Fun, Acc0, _State=#state{mod=Mod, modstate=ModState}) ->
     Mod:fold(ModState, Fun, Acc0).
+
+%% @private
+do_fold_v2(_Sender, _Fun, _Acc, Mod, ModState, Idx) ->
+    _IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx),
+    %% IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx, Bucket, WantBKey, WantMd, WantVal),
+    unfinished_LEFT_OFF_HERE.
 
 %% @private
 do_get_vclocks(KeyList,_State=#state{mod=Mod,modstate=ModState}) ->
