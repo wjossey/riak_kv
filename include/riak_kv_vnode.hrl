@@ -3,6 +3,7 @@
 -type put_option() :: {returnbody, boolean()} |
                       {last_write_wins, boolean()} |
                       {rr, boolean()} |
+                      rr | 
                       {bucket_props, riak_core_bucket:bucket_props()}.
 -type put_options() :: [put_option()].
 

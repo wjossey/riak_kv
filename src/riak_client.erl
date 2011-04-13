@@ -44,7 +44,7 @@
 -export([remove_from_cluster/1]).
 -export([get_stats/1]).
 -export([get_client_id/0]).
--export([for_dialyzer_only_ignore/2]).
+%-export([for_dialyzer_only_ignore/2]).
 %% @type default_timeout() = 60000
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_ERRTOL, 0.00003).
@@ -244,11 +244,13 @@ mapred_dynamic_inputs_stream(FSMPid, InputDef, Timeout) ->
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as the default
 %%      R-value for the nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
+-spec get(binary(), binary(), {_,_,_}) -> ok.
 get(Bucket, Key) -> 
     get(Bucket, Key, []).
 
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R-value for the nodes
 %%      have responded with a value or error.
+-spec get(binary(), binary(), riak_kv_get_fsm:options(), riak_client()) -> ok.
 get(Bucket, Key, Options) when is_list(Options) ->
     Me = self(),
     ReqId = mk_reqid(),
@@ -535,9 +537,9 @@ get_client_id() ->
 %% This function exists only to avoid compiler errors (unused type).
 %% Unfortunately, I can't figure out how to suppress the bogus "Contract for
 %% function that does not exist" warning from Dialyzer, so ignore that one.
--spec for_dialyzer_only_ignore(term(), term()) -> riak_client().
-for_dialyzer_only_ignore(X, Y) ->
-    ?MODULE:new(X, Y).
+%-spec for_dialyzer_only_ignore(term(), term()) -> riak_client().
+%for_dialyzer_only_ignore(X, Y) ->
+%    ?MODULE:new(X, Y).
 
 %% @private
 mk_reqid() -> erlang:phash2(erlang:now()). % only has to be unique per-pid
