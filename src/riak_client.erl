@@ -45,6 +45,8 @@
 -export([get_stats/1]).
 -export([get_client_id/0]).
 %-export([for_dialyzer_only_ignore/2]).
+-compile({no_auto_import,[put/2]}).
+
 %% @type default_timeout() = 60000
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_ERRTOL, 0.00003).
@@ -294,8 +296,29 @@ get(Bucket, Key, R, Timeout) when is_binary(Bucket), is_binary(Key),
 %% @doc Store RObj in the cluster.
 %%      Return as soon as the default W value number of nodes for this bucket
 %%      nodes have received the request.
-%% @equiv put(RObj, W, W, default_timeout())
-put(RObj) -> put(RObj, default, default, ?DEFAULT_TIMEOUT).
+%% @equiv put(RObj, [])
+put(RObj) -> put(RObj, []).
+
+
+%% @spec put(RObj :: riak_object:riak_object(), riak_kv_put_fsm::options()) ->
+%%       ok |
+%%       {ok, details()} |
+%%       {ok, riak_object:riak_object()} |
+%%       {ok, riak_object:riak_object(), details()} |
+%%       {error, notfound} |
+%%       {error, timeout} |
+%%       {error, {n_val_violation, N::integer()}} |
+%%       {error, Err :: term()}
+%%       {error, Err :: term(), details()}
+%% @doc Store RObj in the cluster.
+put(RObj, Options) when is_list(Options) ->
+    UpdObj = riak_object:increment_vclock(RObj, ClientId),
+    Me = self(),
+    ReqId = mk_reqid(),
+    riak_kv_put_fsm_sup:start_put_fsm(Node, [{raw, ReqId, Me}, UpdObj, Options]),
+    %% TODO: Investigate adding a monitor here and eliminating the timeout.
+    Timeout = recv_timeout(Options),
+    wait_for_reqid(ReqId, Timeout);
 
 %% @spec put(RObj :: riak_object:riak_object(), W :: integer()) ->
 %%        ok |
@@ -304,8 +327,8 @@ put(RObj) -> put(RObj, default, default, ?DEFAULT_TIMEOUT).
 %%       {error, {n_val_violation, N::integer()}}
 %% @doc Store RObj in the cluster.
 %%      Return as soon as at least W nodes have received the request.
-%% @equiv put(RObj, W, W, default_timeout())
-put(RObj, W) -> put(RObj, W, W, ?DEFAULT_TIMEOUT).
+%% @equiv put(RObj, [{w, W}, {dw, W}])
+put(RObj, W) -> put(RObj, [{w, W}, {dw, W}]).
 
 %% @spec put(RObj::riak_object:riak_object(),W :: integer(),RW :: integer()) ->
 %%        ok |
@@ -316,7 +339,7 @@ put(RObj, W) -> put(RObj, W, W, ?DEFAULT_TIMEOUT).
 %%      Return as soon as at least W nodes have received the request, and
 %%      at least DW nodes have stored it in their storage backend.
 %% @equiv put(Robj, W, DW, default_timeout())
-put(RObj, W, DW) -> put(RObj, W, DW, ?DEFAULT_TIMEOUT).
+put(RObj, W, DW) -> put(RObj, [{w, W}, {dw, DW}]).
 
 %% @spec put(RObj::riak_object:riak_object(), W :: integer(), RW :: integer(),
 %%           TimeoutMillisecs :: integer()) ->
@@ -328,7 +351,7 @@ put(RObj, W, DW) -> put(RObj, W, DW, ?DEFAULT_TIMEOUT).
 %%      Return as soon as at least W nodes have received the request, and
 %%      at least DW nodes have stored it in their storage backend, or
 %%      TimeoutMillisecs passes.
-put(RObj, W, DW, Timeout) -> put(RObj, W, DW, Timeout, []).
+put(RObj, W, DW, Timeout) -> put(RObj,  [{w, W}, {dw, DW}, {timeout, Timeout}]).
 
 %% @spec put(RObj::riak_object:riak_object(), W :: integer(), RW :: integer(),
 %%           TimeoutMillisecs :: integer(), Options::list()) ->
@@ -341,11 +364,7 @@ put(RObj, W, DW, Timeout) -> put(RObj, W, DW, Timeout, []).
 %%      at least DW nodes have stored it in their storage backend, or
 %%      TimeoutMillisecs passes.
 put(RObj, W, DW, Timeout, Options) ->
-    R0 = riak_object:increment_vclock(RObj, ClientId),
-    Me = self(),
-    ReqId = mk_reqid(),
-    riak_kv_put_fsm_sup:start_put_fsm(Node, [ReqId, R0, W, DW, Timeout, Me, Options]),
-    wait_for_reqid(ReqId, Timeout).
+    put(RObj, [{w, W}, {dw, DW}, {timeout, Timeout} | Options]).
 
 %% @spec delete(riak_object:bucket(), riak_object:key()) ->
 %%        ok |
@@ -559,7 +578,8 @@ wait_for_listkeys(ReqId, Timeout) ->
 wait_for_listkeys(ReqId,Timeout,Acc) ->
     receive
         {ReqId, done} -> {ok, lists:flatten(Acc)};
-        {ReqId,{keys,Res}} -> wait_for_listkeys(ReqId,Timeout,[Res|Acc])
+        {ReqId,{keys,Res}} -> wait_for_listkeys(ReqId,Timeout,[Res|Acc]);
+        {ReqId, Error} -> {error, Error}
     after Timeout ->
             {error, timeout, Acc}
     end.
