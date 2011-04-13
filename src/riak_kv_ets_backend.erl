@@ -287,10 +287,10 @@ make_bev2_fold_iterator(_Idx, Bucket, WantBKey, WantMd, WantVal, S) ->
                  _ ->
                      fun() -> ets:first(S#state.t) end
              end,
-    StopTransFun = if S#state.ordered_p ->
+    StopTransFun = if S#state.ordered_p, Bucket /= undefined ->
                            fun({B, _K} = BKey) when B == Bucket ->
                                    BKey;
-                              (_) ->
+                              (_X) ->
                                    '$end_of_table'
                            end;
                       true ->

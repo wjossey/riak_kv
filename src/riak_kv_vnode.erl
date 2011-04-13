@@ -188,7 +188,9 @@
                caller :: term(),
                req_id :: term(),
                idx :: term(),
-               bucket_tab :: 'undefined' | ets:tab()}).
+               bucket_tab :: 'undefined' | ets:tab(),
+               sender :: term()                 % Used by fold requests only
+              }).
 
 %% TODO: add -specs to all public API funcs, this module seems fragile?
 
@@ -330,14 +332,20 @@ handle_command(?KV_DELETE_REQ{bkey=BKey, req_id=ReqId}, _Sender,
     end;
 handle_command(?KV_VCLOCK_REQ{bkeys=BKeys}, _Sender, State) ->
     {reply, do_get_vclocks(BKeys, State), State};
-handle_command(?FOLD_REQ{foldfun=Fun, acc0=Acc}, Sender,
+
+handle_command(#riak_core_fold_req_v1{foldfun=Fun, acc0=Acc}, Sender, State) ->
+    %% Compatibility shim.
+    handle_command(?FOLD_REQ{foldfun = Fun,
+                             acc0 = Acc,
+                             options = []}, Sender, State);
+handle_command(?FOLD_REQ{foldfun=Fun, acc0=Acc0, options=Options}, Sender,
                #state{mod=Mod, modstate=ModState, idx=Idx,
                       mod_api_version=Version} = State) ->
     if Version == 1 ->
-            Reply = do_fold(Fun, Acc, State),
+            Reply = do_fold(Fun, Acc0, State),
             {reply, Reply, State};
        Version == 2 ->
-            do_fold_v2(Sender, Fun, Acc, Mod, ModState, Idx),
+            do_fold_v2(Sender, Options, Fun, Acc0, Mod, ModState, Idx),
             {noreply, State}
     end;
 
@@ -694,10 +702,18 @@ do_fold(Fun, Acc0, _State=#state{mod=Mod, modstate=ModState}) ->
     Mod:fold(ModState, Fun, Acc0).
 
 %% @private
-do_fold_v2(_Sender, _Fun, _Acc, Mod, ModState, Idx) ->
-    _IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx),
-    %% IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx, Bucket, WantBKey, WantMd, WantVal),
-    unfinished_LEFT_OFF_HERE.
+do_fold_v2(Sender, Options, Fun, Acc0, Mod, ModState, Idx) ->
+    Bucket = proplists:get_value(bucket, Options, undefined),
+    WantBKey = proplists:get_value(want_bkey, Options, true),
+    WantMd = proplists:get_value(want_metadata, Options, false),
+    WantVal = proplists:get_value(want_value, Options, true),
+    IterTerm = Mod:bev2_new_fold_iterator(ModState, Idx, Bucket, WantBKey, WantMd, WantVal),
+    Iter = #iter{type = fold, iter_term = IterTerm,
+                 foldfun = Fun,
+                 foldacc = Acc0,
+                 foldcont = fun fold_continuation/1,
+                 sender = Sender},
+    send_iter_to_self(Iter).
 
 %% @private
 do_get_vclocks(KeyList,_State=#state{mod=Mod,modstate=ModState}) ->
@@ -735,11 +751,16 @@ do_iterate_over_backend(#iter{iter_term = IterTerm, foldacc = FoldAcc} = Iter,
 
 nonb_iterator(done, Acc, _Count,
               #iter{caller = Caller, req_id = ReqId,
-                    idx = Idx, bucket_tab = BucketTab} = Iter,
+                    idx = Idx, bucket_tab = BucketTab, sender = Sender} = Iter,
               _State) ->
-    (Iter#iter.foldcont)(Acc),
-    Caller ! {ReqId, Idx, done},
-    catch ets:delete(BucketTab);
+    if Sender == undefined ->                   % list_keys request
+            (Iter#iter.foldcont)(Acc),
+            Caller ! {ReqId, Idx, done},
+            catch ets:delete(BucketTab);
+       Caller == undefined ->                   % general fold request
+            NewAcc = (Iter#iter.foldcont)(Acc),
+            riak_core_vnode:reply(Sender, NewAcc)
+       end;
 nonb_iterator({continue, IterResult, NewIterTerm}, Acc0, Count,
               Iter, State) ->
     {BKey, MetaData, Value} = IterResult,
@@ -775,8 +796,8 @@ list_keys_continuation({{Caller, ReqId, Idx} = CRI, Acc}) ->
     end,
     {CRI, []}.
 
-%% fold_continuation(X) ->
-%%     X.
+fold_continuation(X) ->
+    X.
 
 %% @private
 send_iter_to_self(Iter) ->
@@ -810,19 +831,18 @@ fs_test_dir() ->
 
 live_backend_with_known_key(BackendMod) ->
     dummy_backend(BackendMod),
+    application:set_env(riak_kv, ets_backend_table_type, ordered_set),
     Index = 0,
     {ok, Pid} = test_vnode(Index),
     B = <<"bucket">>,
     K = <<"known_key">>,
     O = riak_object:new(B, K, <<"z">>),
-    _Sender = {raw, 456, self()},
     VnodeReq = ?KV_PUT_REQ{bkey={B,K},
                            object=O,
                            req_id=123,
                            start_time=riak_core_util:moment(),
                            options=[]},
-    Req = VnodeReq, %%riak_core_vnode_master:make_request(VnodeReq, Sender, Index),
-    riak_core_vnode:send_command(Pid, Req),
+    riak_core_vnode:send_command(Pid, VnodeReq),
     timer:sleep(100),
     {Pid, B, K}.
 
@@ -954,6 +974,68 @@ filter_keys_test() ->
         riak_core_vnode:send_command(Pid, test_shutdown_quietly)
     end,
     flush_msgs().
+
+fold_test() ->
+    %% NOTE: Type ordered_set required for Req3 below
+    application:set_env(riak_kv, ets_backend_table_type, ordered_set),
+    {Pid, _B, _K} = live_backend_with_known_key(riak_kv_ets_backend),
+
+    %%%NumKeys = 100,
+    NumKeys = 10,
+    [begin
+         B = list_to_binary(["b", integer_to_list(X)]),
+         K = list_to_binary(["k", integer_to_list(X)]),
+         O = riak_object:new(B, K, term_to_binary(X)),
+         VnodeReq = ?KV_PUT_REQ{bkey={B,K},
+                                object=O,
+                                req_id=123,
+                                start_time=riak_core_util:moment(),
+                                options=[]},
+         gen_fsm:send_event(Pid, #riak_vnode_req_v1{index = 0,
+                                                    sender = {raw, 424, self()},
+                                                    request = VnodeReq}),
+         %% Get w then dw messages.
+         receive {424, _} -> ok end, % w
+         receive {424, _} -> ok end  % dw
+     end || X <- lists:seq(1, NumKeys)],
+    TargetSum = lists:sum(lists:seq(1, NumKeys)),
+
+    SumFun = fun({<<"bucket">>,<<"known_key">>}, _Md, _V, Acc) ->
+                     %% Skip key courtesy of live_backend_with_known_key()
+                     Acc;
+                (_BKey, _Md, V, Acc) ->     
+                     ValBin = riak_object:get_value(binary_to_term(V)),
+                     Acc + binary_to_term(ValBin)
+             end,
+    %% Check for backward compat.
+    Req1 = #riak_core_fold_req_v1{foldfun = SumFun, acc0 = 0},
+    gen_fsm:send_event(Pid, #riak_vnode_req_v1{index = 0,
+                                               sender = {raw, 425, self()},
+                                               request = Req1}),
+    Answer1 = receive {425, X1} -> X1 after 5000 -> exit(timeout) end,
+    ?assertEqual(TargetSum, Answer1),
+
+    Req2 = ?FOLD_REQ{foldfun = SumFun, acc0 = 0},
+    gen_fsm:send_event(Pid, #riak_vnode_req_v1{index = 0,
+                                               sender = {raw, 425, self()},
+                                               request = Req2}),
+    Answer2 = receive {425, X2} -> X2 after 5000 -> exit(timeout) end,
+    ?assertEqual(TargetSum, Answer2),
+
+    %% Check bucket-limiting feature of general fold for ordered_set ETS table.
+    %% Requires the use of an ordered_set table, though, see top of this func
+    %% for mandatory setup!
+    Req3 = ?FOLD_REQ{foldfun = SumFun, acc0 = 0,
+                     options = [{bucket, <<"b7">>}]},
+    gen_fsm:send_event(Pid, #riak_vnode_req_v1{index = 0,
+                                               sender = {raw, 425, self()},
+                                               request = Req3}),
+    Answer3 = receive {425, X3} -> X3 after 5000 -> exit(timeout) end,
+    ?assertEqual(7, Answer3),
+
+    application:unset_env(riak_kv, ets_backend_table_type),
+    riak_core_vnode:send_command(Pid, test_shutdown_quietly),
+    ok.                  
 
 must_be_last_cleanup_stuff_test() ->
     [application:unset_env(riak_kv, K) ||
