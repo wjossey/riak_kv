@@ -49,16 +49,42 @@
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_ERRTOL, 0.00003).
 
--export_type([riak_client/0, client_id/0, req_id/0, n_val/0, r_val/0, w_val/0, 
-              quorum_type/0]).
+-export_type([riak_client/0, 
+              client_id/0, 
+              req_id/0,
+              quorum_type/0,
+              symbolic_rw_val/0,
+              numeric_rw_val/0,
+              n_val/0, 
+              r_val/0,
+              w_val/0,
+              rw_val/0,
+              dw_val/0,
+              pw_val/0,
+              pr_val/0,
+              quorum_val_pos/0,
+              quorum_val_non_neg/0,
+              quorum_val/0]).
 
 -type riak_client() :: {riak_client, node(), client_id()}.
 -type client_id() :: <<_:32>>.
 -type req_id() :: non_neg_integer().
--type n_val() :: pos_integer().
--type r_val() :: one | quorum | all | default | pos_integer().
--type w_val() :: one | quorum | all | default | pos_integer().
--type quorum_type() :: r|w|rw|pr|pw|dw.
+-type quorum_type() :: r | w | rw | dw | pw | pr.
+-type symbolic_rw_val() :: one | quorum | all | default.
+-type numeric_rw_val_pos() :: pos_integer().
+-type numeric_rw_val_non_neg() :: non_neg_integer().
+-type numeric_rw_val() :: numeric_rw_val_pos() | numeric_rw_val_non_neg().
+-type n_val()  :: numeric_rw_val_pos().
+-type quorum_val_t(IntType) :: symbolic_rw_val() | IntType.
+-type quorum_val_pos() :: quorum_val_t(numeric_rw_val_pos()).
+-type quorum_val_non_neg() :: quorum_val_t(numeric_rw_val_non_neg()).
+-type r_val()  :: quorum_val_pos().
+-type w_val()  :: quorum_val_pos().
+-type rw_val() :: quorum_val_pos().
+-type dw_val() :: quorum_val_non_neg().
+-type pw_val() :: quorum_val_non_neg().
+-type pr_val() :: quorum_val_non_neg().
+-type quorum_val() :: quorum_val_pos() | quorum_val_non_neg().
 
 %% @spec mapred(Inputs :: riak_kv_mapred_term:mapred_inputs(),
 %%              Query :: [riak_kv_mapred_query:mapred_queryterm()]) ->
@@ -218,22 +244,11 @@ mapred_dynamic_inputs_stream(FSMPid, InputDef, Timeout) ->
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as the default
 %%      R-value for the nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
--spec get(riak_object:bucket(), riak_object:key()) ->
-                 {ok, riak_object:riak_object()} |
-                 {ok, riak_object:riak_object(), [any()]} |
-                 {error, any()} |
-                 {error, any(), [any()]}.
 get(Bucket, Key) -> 
     get(Bucket, Key, []).
 
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R-value for the nodes
 %%      have responded with a value or error.
--spec get(
-        riak_object:bucket(), riak_object:key(), riak_kv_get_fsm:options() | r_val()) ->
-                 {ok, riak_object:riak_object()} |
-                 {ok, riak_object:riak_object(), [any()]} |
-                 {error, any()} |
-                 {error, any(), [any()]}.
 get(Bucket, Key, Options) when is_list(Options) ->
     Me = self(),
     ReqId = mk_reqid(),
@@ -263,11 +278,6 @@ get(Bucket, Key, R) ->
 %%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.
--spec get(riak_object:bucket(), riak_object:key(), r_val(), non_neg_integer()) ->
-                 {ok, riak_object:riak_object()} |
-                 {ok, riak_object:riak_object(), [any()]} |
-                 {error, any()} |
-                 {error, any(), [any()]}.
 get(Bucket, Key, R, Timeout) when is_binary(Bucket), is_binary(Key),
                                   (is_atom(R) or is_integer(R)),
                                   is_integer(Timeout) ->
@@ -367,7 +377,6 @@ delete(Bucket,Key,RW) -> delete(Bucket,Key,RW,?DEFAULT_TIMEOUT).
 %%       {error, Err :: term()}
 %% @doc Delete the object at Bucket/Key.  Return a value as soon as RW
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.
--spec delete(riak_object:bucket(), riak_object:key(), r_val(), pos_integer()) -> any().
 delete(Bucket,Key,RW,Timeout) ->
     Me = self(),
     ReqId = mk_reqid(),

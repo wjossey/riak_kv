@@ -33,7 +33,7 @@
 -export([prepare/2,validate/2,execute/2,waiting_vnode_r/2,waiting_read_repair/2]).
 
 -type option() :: {r, riak_client:r_val()} |   %% Minimum number of successful responses
-                  {pr, riak_client:r_val()} |  %% Minimum number of primary vnodes participating
+                  {pr, riak_client:pr_val()} |  %% Minimum number of primary vnodes participating
                   {basic_quorum, boolean()} |  %% Whether to use basic quorum (return early 
                                                %% in some failure cases.
                   {notfound_ok, boolean()}  |  %% Count notfound reponses as successful.
@@ -45,7 +45,7 @@
 -record(state, {from :: {raw, riak_client:req_id(), pid()},
                 options=[] :: options(),
                 n :: riak_client:n_val(),
-                r :: pos_integer(),
+                r :: riak_client:quorum_val_pos(),
                 fail_threshold :: non_neg_integer(),
                 allowmult :: boolean(),
                 notfound_ok :: boolean(),
@@ -77,9 +77,13 @@
 %% ===================================================================
 
 %% In place only for backwards compatibility
+-spec start(riak_client:req_id(), riak_object:bucket(), riak_object:key(),
+            riak_client:r_val(), timeout(), term()) -> {ok, pid()}.
 start(ReqId,Bucket,Key,R,Timeout,From) ->
     start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 
+-spec start_link(riak_client:req_id(), riak_object:bucket(), riak_object:key(),
+                 riak_client:r_val(), timeout(), term()) -> {ok, pid()}.
 start_link(ReqId,Bucket,Key,R,Timeout,From) ->
     start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 
@@ -91,8 +95,9 @@ start_link(ReqId,Bucket,Key,R,Timeout,From) ->
 %%                             in some failure cases.
 %% {notfound_ok, boolean()}  - Count notfound reponses as successful.
 %% {timeout, pos_integer() | infinity} -  Timeout for vnode responses
--spec start_link({raw, riak_client:req_id(), pid()}, binary(), binary(), options()) ->
-                        {ok, pid()} | {error, any()}.
+-spec start_link({raw, riak_client:req_id(), pid()}, riak_object:bucket(), 
+                 riak_object:key(), options()) ->
+                        {ok, pid()}.
 start_link(From, Bucket, Key, GetOptions) ->
     gen_fsm:start_link(?MODULE, [From, Bucket, Key, GetOptions], []).
 

@@ -40,9 +40,9 @@
 
 -record(state, {robj :: riak_object:riak_object(),
                 client :: {pid(), reference()},
-                n :: pos_integer(),
-                w :: pos_integer(),
-                dw :: non_neg_integer(),
+                n :: riak_client:n_val(),
+                w :: riak_client:quorum_val_pos(),
+                dw :: riak_client:quorum_val_non_neg(),
                 preflist2 :: riak_core_apl:preflist2(),
                 bkey :: {riak_object:bucket(), riak_object:key()},
                 req_id :: riak_client:req_id(),

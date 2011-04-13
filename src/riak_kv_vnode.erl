@@ -61,7 +61,7 @@
 
 -record(mrjob, {cachekey :: term(),
                 bkey :: riak_object:bkey(),
-                reqid :: riak_client:client_id(),
+                reqid :: riak_client:req_id(),
                 target :: pid()}).
 
 -record(state, {idx :: chash:partition(),
@@ -76,7 +76,7 @@
                   robj :: riak_object:riak_object(),
                   reqid :: riak_client:req_id(),
                   bprops :: riak_core_bucket:bucket_props(),
-                  prunetime :: undefined | non_neg_integer()}).
+                  prunetime :: undefined | pos_integer()}).
 
 %% TODO: add -specs to all public API funcs, this module seems fragile?
 
@@ -177,6 +177,9 @@ init([Index]) ->
 
     {ok, #state{idx=Index, mod=Mod, modstate=ModState, mrjobs=dict:new()}}.
 
+-type all_commands() :: riak_kv_any_req() | tuple().
+-spec handle_command(all_commands(), sender(), #state{}) -> {noreply, #state{}} |
+                                                            {reply, term(), #state{}}.
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
                            req_id=ReqId,
@@ -244,22 +247,27 @@ handle_command({mapexec_reply, JobId, Result}, _Sender, #state{mrjobs=Jobs}=Stat
                end,
     {noreply, NewState}.
 
+-spec handle_handoff_command(all_commands(), sender(), #state{}) -> {noreply, #state{}} |
+                                                                    {reply, term(), #state{}} |
+                                                                    {forward, #state{}}.
 handle_handoff_command(Req=?FOLD_REQ{}, Sender, State) ->
     handle_command(Req, Sender, State);
 handle_handoff_command(Req={backend_callback, _Ref, _Msg}, Sender, State) ->
     handle_command(Req, Sender, State);
 handle_handoff_command(_Req, _Sender, State) -> {forward, State}.
 
-
 handoff_starting(_TargetNode, State) ->
     {true, State#state{in_handoff=true}}.
 
+-spec handoff_cancelled(#state{}) -> {ok, #state{}}.
 handoff_cancelled(State) ->
     {ok, State#state{in_handoff=false}}.
 
+-spec handoff_finished(node(), #state{}) -> {ok, #state{}}.
 handoff_finished(_TargetNode, State) ->
     {ok, State}.
 
+-spec handle_handoff_data(binary(), #state{}) -> {reply, ok | {error, term()}, #state{}}.
 handle_handoff_data(BinObj, State) ->
     PBObj = riak_core_pb:decode_riakobject_pb(zlib:unzip(BinObj)),
     BKey = {PBObj#riakobject_pb.bucket,PBObj#riakobject_pb.key},
@@ -270,13 +278,17 @@ handle_handoff_data(BinObj, State) ->
             {reply, {error, Err}, State}
     end.
 
+-spec encode_handoff_item({riak_object:bucket(), riak_object:key()}, riak_object:value()) ->
+                                 binary().
 encode_handoff_item({B,K}, V) ->
     zlib:zip(riak_core_pb:encode_riakobject_pb(
                #riakobject_pb{bucket=B, key=K, val=V})).
 
+-spec is_empty(#state{}) -> {boolean(), #state{}}.
 is_empty(State=#state{mod=Mod, modstate=ModState}) ->
     {Mod:is_empty(ModState), State}.
 
+-spec delete(#state{}) -> {ok, #state{}}.
 delete(State=#state{mod=Mod, modstate=ModState}) ->
     ok = Mod:drop(ModState),
     {ok, State}.
@@ -303,6 +315,9 @@ handle_exit(_Pid, _Reason, _StateName, State) ->
 
 %% @private
 % upon receipt of a client-initiated put
+-spec do_put(sender(), riak_object:bkey(), riak_object:riak_object(),
+             riak_client:req_id(), pos_integer(), put_options(), #state{}) ->
+                    {boolean(), riak_object:riak_object()}.
 do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
     case proplists:get_value(bucket_props, Options) of
         undefined ->
@@ -311,11 +326,9 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
         BProps ->
             BProps
     end,
-    case proplists:get_value(rr, Options, false) of
-        true ->
-            PruneTime = undefined;
-        false ->
-            PruneTime = StartTime
+    PruneTime = case proplists:get_value(rr, Options, false) of
+        true -> undefined;
+        false -> StartTime
     end,
     PutArgs = #putargs{returnbody=proplists:get_value(returnbody,Options,false),
                        lww=proplists:get_value(last_write_wins, BProps, false),
@@ -400,6 +413,10 @@ select_newest_content(Mult) ->
 syntactic_put_merge(Mod, ModState, BKey, Obj1, ReqId) ->
     syntactic_put_merge(Mod, ModState, BKey, Obj1, ReqId, vclock:timestamp()).
 
+-spec syntactic_put_merge(module(), term(), riak_object:bkey(),
+                          riak_object:riak_object(), riak_client:req_id(),
+                          vclock:timestamp()|undefined) ->
+                                 {newobj|oldobj, riak_object:riak_object()}.
 syntactic_put_merge(Mod, ModState, BKey, Obj1, ReqId, StartTime) ->
     case Mod:get(ModState, BKey) of
         {error, notfound} -> {newobj, Obj1};
