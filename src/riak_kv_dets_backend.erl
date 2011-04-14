@@ -27,38 +27,30 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
--export([capability/1,capability/3,
+-export([capability/0,capability/2,
          start/2,stop/1,get/2,put/3,list/1,list_bucket/2,
          delete/2, fold/3, fold_bucket_keys/4, is_empty/1, drop/1, callback/3]).
 
 % @type state() = term().
 -record(state, {table, path}).
 
--spec capability(atom()) -> boolean() | 'maybe'.
+-spec capability() -> [term()].
 
-capability(has_ordered_keys) ->
-    false;
-capability(keys_and_values_stored_together) ->
-    true;
-capability(vclocks_and_values_stored_together) ->
-    true;
-capability(fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_) ->
-    false.
+capability() ->
+    [%% Mandatory
+     {api_version, 2},
+     %% Advisory
+     {has_ordered_keys, false},
+     {fold_will_block, false},
+     {list_will_block, false},
+     %% Perhaps helpful hints
+     {keys_and_values_stored_together, true},
+     {vclocks_and_values_stored_together, true}].
 
--spec capability(term(), binary(), atom()) -> boolean().
+-spec capability(term(), 'undefined' | binary()) -> [term()].
 
-capability(_State, _Bucket, has_ordered_keys) ->
-    false;
-capability(_State, _Bucket, keys_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, vclocks_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_State, _Bucket, _) ->
-    false.
+capability(_SrvRef, _Bucket) ->
+    capability().
 
 % @spec start(Partition :: integer(), Config :: proplist()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}

@@ -27,38 +27,46 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
--export([capability/1,capability/3,
+-export([capability/0,capability/2,
          start/2, stop/1,get/2,put/3,list/1,list_bucket/2,
          delete/2,is_empty/1,fold/3,fold_bucket_keys/4,drop/1,callback/3]).
 
 % @type state() = term().
 -record(state, {pid}).
 
--spec capability(atom()) -> boolean() | 'maybe'.
+-spec capability() -> [term()].
 
-capability(has_ordered_keys) ->
-    true;
-capability(keys_and_values_stored_together) ->
-    true;
-capability(vclocks_and_values_stored_together) ->
-    true;
-capability(fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_) ->
-    false.
+capability() ->
+    [%% Mandatory
+     {api_version, 2},
 
--spec capability(term(), binary(), atom()) -> boolean().
+     %% Advisory
+     %%
+     %% The gb_trees API doesn't have equiv of ets:next/2, alas, so we
+     %% can only implement 1/2 of an efficient single-bucket-only
+     %% iterator: we can efficiently decide when to stop an iteration
+     %% (when we reach the contents of the following bucket), but we
+     %% cannot efficiently find the first key of the desired bucket in
+     %% O(1) time.
+     {has_ordered_keys, true},
+     %% TODO: I'm going to implment non-blocking versions of fold &
+     %%       listkeys because it's mostly possible to do so.
+     %%       HOWEVER, unlike the ETS backend, a gb_trees iterator
+     %%       creates a snapshot of the tree that is independent of
+     %%       the original tree.  For good or for ill, this iteration
+     %%       implementation will not "see" updates made to the
+     %%       original tree after the iterator is created.
+     {fold_will_block, false},
+     {list_will_block, false},
 
-capability(_State, _Bucket, has_ordered_keys) ->
-    true;
-capability(_State, _Bucket, keys_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, vclocks_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_BeThingie, _Bucket, _) ->
-    false.
+     %% Perhaps helpful hints
+     {keys_and_values_stored_together, true},
+     {vclocks_and_values_stored_together, true}].
+
+-spec capability(term(), 'undefined' | binary()) -> [term()].
+
+capability(_SrvRef, _Bucket) ->
+    capability().
 
 % @spec start(Partition :: integer(), Config :: integer()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}

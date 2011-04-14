@@ -22,7 +22,7 @@
 
 -module (riak_kv_multi_backend).
 -behavior(riak_kv_backend).
--export([capability/1,capability/3,
+-export([capability/0,capability/2,
          start/2,stop/1,get/2,put/3,list/1,list_bucket/2,delete/2,is_empty/1,
          drop/1,fold/3,fold_bucket_keys/4]).
 -export([callback/3]).
@@ -61,31 +61,24 @@
 %%
 %%
 
--spec capability(atom()) -> boolean() | 'maybe'.
+-spec capability() -> [term()].
 
-capability(has_ordered_keys) ->
-    maybe;
-capability(keys_and_values_stored_together) ->
-    maybe;
-capability(vclocks_and_values_stored_together) ->
-    maybe;
-capability(fold_will_block) ->
-    maybe;
-capability(_) ->
-    false.
+capability() ->
+    [%% Mandatory
+     {api_version, 2},
+     %% Advisory
+     {has_ordered_keys, maybe},
+     {fold_will_block, maybe},
+     {list_will_block, maybe},
+     %% Perhaps helpful hints
+     {keys_and_values_stored_together, mabye},
+     {vclocks_and_values_stored_together, maybe}].
 
--spec capability(term(), binary(), atom()) -> boolean().
+-spec capability(term(), 'undefined' | binary()) -> [term()].
 
-capability(_State, _Bucket, has_ordered_keys) ->
-    true; %% SLF TODO: Make bucket-specific answer
-capability(_State, _Bucket, keys_and_values_stored_together) ->
-    true; %% SLF TODO: Make bucket-specific answer
-capability(_State, _Bucket, vclocks_and_values_stored_together) ->
-    true; %% SLF TODO: Make bucket-specific answer
-capability(_State, _Bucket, fold_will_block) ->
-    true; %% SLF TODO: Make bucket-specific answer
-capability(_State, _Bucket, _) ->
-    false.
+capability(State, Bucket) ->
+    {_Name, Module, SubState} = get_backend(Bucket, State),
+    Module:capability(SubState, Bucket).
 
 % @spec start(Partition :: integer(), Config :: integer()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}

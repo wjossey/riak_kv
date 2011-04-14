@@ -37,7 +37,7 @@
 
 -module (riak_kv_cache_backend).
 -behavior(riak_kv_backend).
--export([capability/1, capability/3,
+-export([capability/0, capability/2,
          start/2, stop/1, get/2, put/3, list/1, list_bucket/2, delete/2]).
 -export([drop/1, is_empty/1, fold/3, fold_bucket_keys/4, callback/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -60,31 +60,23 @@
 
 %%% RIAK BACKEND INTERFACE %%%
 
--spec capability(atom()) -> boolean() | 'maybe'.
+-spec capability() -> [term()].
 
-capability(has_ordered_keys) ->
-    true;
-capability(keys_and_values_stored_together) ->
-    true;
-capability(vclocks_and_values_stored_together) ->
-    true;
-capability(fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_) ->
-    false.
+capability() ->
+    [%% Mandatory
+     {api_version, 2},
+     %% Advisory
+     {has_ordered_keys, true},
+     {fold_will_block, false},
+     {list_will_block, false},
+     %% Perhaps helpful hints
+     {keys_and_values_stored_together, true},
+     {vclocks_and_values_stored_together, true}].
 
--spec capability(term(), binary(), atom()) -> boolean().
+-spec capability(term(), 'undefined' | binary()) -> [term()].
 
-capability(_State, _Bucket, has_ordered_keys) ->
-    true;
-capability(_State, _Bucket, keys_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, vclocks_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_State, _Bucket, _) ->
-    false.
+capability(_SrvRef, _Bucket) ->
+    capability().
 
 % @spec start(Partition :: integer(), Config :: proplist()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}

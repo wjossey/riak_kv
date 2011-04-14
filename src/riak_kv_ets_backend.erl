@@ -29,7 +29,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 -export([capability/0,capability/2,
-         capability/1,capability/3, %% TODO delete these two
          %% TODO: Verify that list/1 is either deprecated or maintained
          %%       for debugging/testing purposes.  It seems to me that
          %%       the vnode interface isn't used by riak_kv_vnode at all.
@@ -65,31 +64,6 @@ capability() ->
 
 capability(SrvRef, Bucket) ->
     gen_server:call(SrvRef, {capability, Bucket}, infinity).
-
-%% TODO: delete to DELETEME
--spec capability(atom()) -> boolean() | 'maybe'.
-capability(has_ordered_keys) ->
-    maybe;
-capability(keys_and_values_stored_together) ->
-    true;
-capability(vclocks_and_values_stored_together) ->
-    true;
-capability(fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_) ->
-    false.
--spec capability(term(), binary(), atom()) -> boolean().
-capability(_State, _Bucket, has_ordered_keys) ->
-    false; %% SLF TODO: if table is ordered_set, then true!
-capability(_State, _Bucket, keys_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, vclocks_and_values_stored_together) ->
-    true;
-capability(_State, _Bucket, fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_State, _Bucket, _) ->
-    false.
-%%% TODO: DELETEME end
 
 % @spec start(Partition :: integer(), Config :: proplist()) ->
 %                        {ok, state()} | {{error, Reason :: term()}, state()}

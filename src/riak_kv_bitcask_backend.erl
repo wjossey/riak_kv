@@ -26,8 +26,8 @@
 -author('Dave Smith <dizzyd@basho.com>').
 
 %% KV Backend API
--export([capability/1,
-         capability/3,
+-export([capability/0,
+         capability/2,
          start/2,
          stop/1,
          get/2,
@@ -53,34 +53,24 @@
 
 -define(MERGE_CHECK_INTERVAL, timer:minutes(3)).
 
--spec capability(atom()) -> boolean() | 'maybe'.
+-spec capability() -> [term()].
 
-capability(has_ordered_keys) ->
-    maybe;
-capability(keys_and_values_stored_together) ->
-    false;
-capability(vclocks_and_values_stored_together) ->
-    %% SLF TODO: I've an idea for bitcask to store vclocks in its hint
-    %%           file.  Perhaps that could make folds cheaper for
-    %%           stuff like repl full sync?
-    true;
-capability(fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_) ->
-    false.
+capability() ->
+    [%% Mandatory
+     {api_version, 2},
+     %% Advisory
+     {has_ordered_keys, maybe}, %% TODO: I'm being subversive here....
+     {fold_will_block, false},
+     {list_will_block, false},
+     %% Perhaps helpful hints
+     {keys_and_values_stored_together, false},
+     {vclocks_and_values_stored_together, maybe}]. %% TODO: More subversiveness
 
--spec capability(term(), binary(), atom()) -> boolean().
+-spec capability(term(), 'undefined' | binary()) -> [term()].
 
-capability(_Reftuple, _Bucket, has_ordered_keys) ->
-    false; %% TODO: change this when ordered keys are available.
-capability(_Reftuple, _Bucket, keys_and_values_stored_together) ->
-    false;
-capability(_Reftuple, _Bucket, vclocks_and_values_stored_together) ->
-    true;
-capability(_Reftuple, _Bucket, fold_will_block) ->
-    true; %% SLF TODO: change this
-capability(_Reftuple, _Bucket, _) ->
-    false.
+capability(_SrvRef, _Bucket) ->
+    [{has_ordered_keys, false},                 % TODO: Make these real.  :-)
+     {vclocks_and_values_stored_together, false}] ++ capability().
 
 start(Partition, Config) ->
 
