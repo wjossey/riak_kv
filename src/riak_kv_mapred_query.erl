@@ -49,23 +49,29 @@
 %%         containing the definition of an anonymous
 %%         Erlang function.</li>
 %%</ul>
-%% @type mapred_queryterm() =
-%%         {map, mapred_funterm(), Arg :: term(),
-%%          Accumulate :: boolean()} |
-%%         {reduce, mapred_funterm(), Arg :: term(),
-%%          Accumulate :: boolean()} |
-%%         {link, Bucket :: riak_object:bucket(), Tag :: term(),
-%%          Accumulate :: boolean()}
-%% @type mapred_funterm() =
-%%         {modfun, Module :: atom(), Function :: atom()}|
-%%         {qfun, function()}|
-%%         {strfun, list() | binary()}
-%% @type mapred_result() = [term()]
-
 -module(riak_kv_mapred_query).
+-type mapred_queryterm() ::
+        {map, mapred_funterm(), Arg :: term(),
+         Accumulate :: boolean()} |
+        {reduce, mapred_funterm(), Arg :: term(),
+         Accumulate :: boolean()} |
+        {link, riak_object:bucket(), Tag :: term(),
+         Accumulate :: boolean()}.
+
+-type mapred_funterm() ::
+        {modfun, Module :: atom(), Function :: atom()}|
+        {qfun, function()}|
+        {strfun, list() | binary()}.
+
+%%-type mapred_result() ::  [term()].
+
+-type mapred_query() :: [mapred_queryterm()].
+
+
 
 -export([start/6]).
 
+-spec start(_,_,riak_client:req_id(), mapred_query(),_,_) -> any().
 start(Node, Client, ReqId, Query0, ResultTransformer, Timeout) ->
     EffectiveTimeout = erlang:trunc(Timeout  * 1.1),
     case check_query_syntax(Query0) of

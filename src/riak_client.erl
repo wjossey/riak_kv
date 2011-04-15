@@ -80,8 +80,8 @@
 -type quorum_val_t(IntType) :: symbolic_rw_val() | IntType.
 -type quorum_val_pos() :: quorum_val_t(numeric_rw_val_pos()).
 -type quorum_val_non_neg() :: quorum_val_t(numeric_rw_val_non_neg()).
--type r_val()  :: quorum_val_pos().
--type w_val()  :: quorum_val_pos().
+-type r_val()  :: quorum_val_non_neg().
+-type w_val()  :: quorum_val_non_neg().
 -type rw_val() :: quorum_val_pos().
 -type dw_val() :: quorum_val_non_neg().
 -type pw_val() :: quorum_val_non_neg().

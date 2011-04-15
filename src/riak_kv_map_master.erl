@@ -36,13 +36,13 @@
 
 -define(SERVER, ?MODULE).
 
--record(mapper, {vnode,
-                 qterm,
+-record(mapper, {vnode :: [{chash:partition(), node()}],
+                 qterm :: term(),
                  inputs,
-                 phase}).
+                 phase :: pid()}).
 
--record(state, {datadir,
-                store,
+-record(state, {datadir :: file:filename(),
+                store :: reference(),
                 highest,
                 next}).
 

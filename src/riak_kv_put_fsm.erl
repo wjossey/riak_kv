@@ -47,9 +47,9 @@
                   false |
                   [detail_info()].
 
--type option() :: {pw, non_neg_integer()} | %% Min number of primary (owner) vnodes participating
-                  {w,  non_neg_integer()} | %% Minimum number of vnodes receiving write
-                  {dw, non_neg_integer()} | %% Minimum number of vnodes completing write
+-type option() :: {pw, riak_client:pw_val()} | %% Min number of primary (owner) vnodes participating
+                  {w,  riak_client:w_val()}  | %% Minimum number of vnodes receiving write
+                  {dw, riak_client:dw_val()} | %% Minimum number of vnodes completing write
                   {timeout, timeout()} |
                   {details, detail()}.      %% Request additional details about request
                                             %% added as extra element at the end of result tuplezd 
@@ -64,7 +64,7 @@
                 w :: non_neg_integer(),
                 dw :: non_neg_integer(),
                 preflist2 :: riak_core_apl:preflist2(),
-                bkey :: {riak_object:bucket(), riak_object:key()},
+                bkey :: riak_object:bkey(),
                 req_id :: riak_client:req_id(),
                 starttime :: pos_integer(), % start time to send to vnodes
                 replied_w :: [chash:partition()],
@@ -72,7 +72,7 @@
                 replied_fail :: [chash:partition()],
                 timeout :: timeout(),
                 tref    :: reference(),
-                vnode_options=[] :: list(),
+                vnode_options=[] :: put_options(),
                 returnbody :: boolean(),
                 resobjs=[] :: [riak_object:riak_object()],
                 allowmult :: boolean(),

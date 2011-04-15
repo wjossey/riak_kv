@@ -45,13 +45,13 @@
          code_change/4]).
 
 -record(state, {id,
-                cache_ref,
-                cache_key_base,
+                cache_ref :: reference(),
+                cache_key_base :: not_cached | binary(),
                 vnode,
                 vm,
                 qterm,
                 pending,
-                reqid,
+                reqid :: riak_client:req_id(),
                 data=[],
                 inputs,
                 phase}).
@@ -254,6 +254,7 @@ split(L) when length(L) =< 5 ->
 split(L) ->
     lists:split(5, L).
 
+-spec generate_cache_key_base(_) -> not_cached | binary().
 generate_cache_key_base({erlang, {map, {modfun, Mod, Fun}, Arg, _}}) ->
     term_to_binary([Mod, Fun, Arg], [compressed]);
 generate_cache_key_base({erlang, _}) ->
@@ -263,6 +264,7 @@ generate_cache_key_base({javascript, {map, {jsanon, Source}, Arg, _}}) ->
 generate_cache_key_base({javascript, {map, {jsfun, Name}, Arg, _}}) ->
     term_to_binary([Name, Arg]).
 
+-spec generate_final_cachekey(_, _) -> not_cached | string().
 generate_final_cachekey(not_cached, _KD) ->
     not_cached;
 generate_final_cachekey(CacheKey, KD) ->

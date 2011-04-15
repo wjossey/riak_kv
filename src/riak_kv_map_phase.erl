@@ -31,7 +31,11 @@
 -export([init/1, handle_input/3, handle_input_done/1, handle_event/2,
          handle_sync_event/3, handle_info/2, handle_timeout/1, terminate/2]).
 
--record(state, {done=false, qterm, fsms=dict:new(), mapper_data=[], pending=[]}).
+-record(state, {done=false :: boolean(), 
+                qterm :: term(), 
+                fsms=dict:new() :: dict(), 
+                mapper_data=[] :: [{atom(), term()}], 
+                pending=[]}).
 
 init([QTerm]) ->
     {ok, #state{qterm=QTerm}}.
@@ -84,7 +88,7 @@ handle_event({mapexec_reply, VNode, BKey, Reply, Executor}, #state{fsms=FSMs, ma
 
 handle_event({mapexec_error, _Executor, Reply}, State) ->
     %{no_output, State};
-    {stop, Reply, State#state{fsms=[]}};
+    {stop, Reply, State#state{fsms=dict:new()}};
 handle_event(_Event, State) ->
     {no_output, State}.
 

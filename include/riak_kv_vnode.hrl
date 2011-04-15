@@ -1,5 +1,7 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
+-type bool_opt_tuple(T) :: T | {T, boolean()}.
+
 -type put_option() :: {returnbody, boolean()} |
                       {last_write_wins, boolean()} |
                       {rr, boolean()} |
