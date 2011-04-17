@@ -82,7 +82,7 @@
 
 %% API
 start_vnode(I) ->
-    riak_core_vnode_master:get_vnode_pid(I, riak_kv_vnode).
+    riak_core_vnode:get_vnode_pid(I, riak_kv_vnode).
 
 test_vnode(I) ->
     riak_core_vnode:start_link(riak_kv_vnode, I, infinity).
@@ -92,24 +92,22 @@ get(Preflist, BKey, ReqId) ->
                       req_id=ReqId},
     %% Assuming this function is called from a FSM process
     %% so self() == FSM pid
-    riak_core_vnode_master:command(Preflist,
-                                   Req,
-                                   {fsm, undefined, self()},
-                                   riak_kv_vnode_master).
+    riak_core_vnode:command(Preflist,
+                            Req,
+                            {fsm, undefined, self()},
+                            ?MODULE).    
 
 mget(Preflist, BKeys, ReqId) ->
     Req = ?KV_MGET_REQ{bkeys=BKeys,
                        req_id=ReqId,
                        from={fsm, self()}},
-    riak_core_vnode_master:command(Preflist,
-                                   Req,
-                                   riak_kv_vnode_master).
+    riak_core_vnode:command(Preflist, Req, ?MODULE).
 
 del(Preflist, BKey, ReqId) ->
-    riak_core_vnode_master:command(Preflist,
-                                   ?KV_DELETE_REQ{bkey=BKey,
-                                                  req_id=ReqId},
-                                   riak_kv_vnode_master).
+    riak_core_vnode:command(Preflist,
+                            ?KV_DELETE_REQ{bkey=BKey,
+                                           req_id=ReqId},
+                            ?MODULE).
 
 %% Issue a put for the object to the preflist, expecting a reply
 %% to an FSM.
@@ -118,40 +116,40 @@ put(Preflist, BKey, Obj, ReqId, StartTime, Options) when is_integer(StartTime) -
 
 put(Preflist, BKey, Obj, ReqId, StartTime, Options, Sender)
   when is_integer(StartTime) ->
-    riak_core_vnode_master:command(Preflist,
-                                   ?KV_PUT_REQ{
-                                      bkey = BKey,
-                                      object = Obj,
-                                      req_id = ReqId,
-                                      start_time = StartTime,
-                                      options = Options},
-                                   Sender,
-                                   riak_kv_vnode_master).
+    riak_core_vnode:command(Preflist,
+                            ?KV_PUT_REQ{
+                               bkey = BKey,
+                               object = Obj,
+                               req_id = ReqId,
+                               start_time = StartTime,
+                               options = Options},
+                            Sender,
+                            ?MODULE).
 
 %% Do a put without sending any replies
 readrepair(Preflist, BKey, Obj, ReqId, StartTime, Options) ->
     put(Preflist, BKey, Obj, ReqId, StartTime, [rr | Options], ignore).
 
 list_keys(Preflist, ReqId, Caller, Bucket) ->
-  riak_core_vnode_master:command(Preflist,
-                                 ?KV_LISTKEYS_REQ{
-                                    bucket=Bucket,
-                                    req_id=ReqId,
-                                    caller=Caller},
-                                 ignore,
-                                 riak_kv_vnode_master).
+  riak_core_vnode:command(Preflist,
+                          ?KV_LISTKEYS_REQ{
+                             bucket=Bucket,
+                             req_id=ReqId,
+                             caller=Caller},
+                          ignore,
+                          ?MODULE).
 
 fold(Preflist, Fun, Acc0) ->
-    riak_core_vnode_master:sync_spawn_command(Preflist,
-                                              ?FOLD_REQ{
-                                                 foldfun=Fun,
-                                                 acc0=Acc0},
-                                              riak_kv_vnode_master).
+    riak_core_vnoder:sync_spawn_command(Preflist,
+                                        ?FOLD_REQ{
+                                           foldfun=Fun,
+                                           acc0=Acc0},
+                                        ?MODULE).
 
 get_vclocks(Preflist, BKeyList) ->
-    riak_core_vnode_master:sync_spawn_command(Preflist,
-                                              ?KV_VCLOCK_REQ{bkeys=BKeyList},
-                                              riak_kv_vnode_master).
+    riak_core_vnode:sync_spawn_command(Preflist,
+                                       ?KV_VCLOCK_REQ{bkeys=BKeyList},
+                                       ?MODULE).
 
 %% VNode callbacks
 

@@ -131,7 +131,7 @@ setup() ->
 
 cleanup(_Pid) ->
     do_dep_apps(stop, lists:reverse(dep_apps())),
-    catch exit(whereis(riak_kv_vnode_master), kill), %% Leaks occasionally
+    catch exit(whereis(riak_kv_vnode), kill), %% Leaks occasionally
     catch exit(whereis(riak_sysmon_filter), kill), %% Leaks occasionally
     net_kernel:stop(),
     %% Reset the riak_core vnode_modules

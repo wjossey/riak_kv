@@ -34,7 +34,7 @@
 
 rewrite_cast({vnode_map, {Partition,_Node},
              {ClientPid,QTerm,BKey,KeyData}}) ->
-    Req = riak_core_vnode_master:make_request(
+    Req = riak_core_vnode:make_request(
             ?KV_MAP_REQ{
                qterm = QTerm,
                bkey = BKey,
@@ -44,7 +44,7 @@ rewrite_cast({vnode_map, {Partition,_Node},
     {ok, Req};
 rewrite_cast({vnode_put, {Partition,_Node},
               {FSM_pid,BKey,RObj,ReqID,FSMTime,Options}}) ->
-    Req = riak_core_vnode_master:make_request(
+    Req = riak_core_vnode:make_request(
             ?KV_PUT_REQ{
                bkey = BKey,
                object = RObj,
@@ -56,7 +56,7 @@ rewrite_cast({vnode_put, {Partition,_Node},
     {ok, Req};
 rewrite_cast({vnode_get, {Partition,_Node},
               {FSM_pid,BKey,ReqId}}) ->
-    Req = riak_core_vnode_master:make_request(
+    Req = riak_core_vnode:make_request(
             ?KV_GET_REQ{
                bkey = BKey,
                req_id = ReqId
@@ -70,7 +70,7 @@ rewrite_cast({vnode_get, {Partition,_Node},
 %%     {noreply, State};
 rewrite_cast({vnode_list_bucket, {Partition,_Node},
               {FSM_pid, Bucket, ReqID}}) ->
-    Req = riak_core_vnode_master:make_request(
+    Req = riak_core_vnode:make_request(
             #riak_kv_listkeys_req_v1{
                bucket=Bucket,
                req_id=ReqID},
@@ -89,7 +89,7 @@ rewrite_cast({vnode_list_bucket, {Partition,_Node},
 %%     {reply, all_vnodes(State), State};
 rewrite_call({vnode_del, {Partition,_Node},
               {BKey,ReqID}}, _From) ->
-    Req = riak_core_vnode_master:make_request(
+    Req = riak_core_vnode:make_request(
             ?KV_DELETE_REQ{bkey=BKey,
                            req_id=ReqID},
             ignore,
@@ -128,14 +128,14 @@ start_servers() ->
     application:set_env(riak_core, default_bucket_props, []),
     Ring = riak_core_ring:fresh(16, node()),
     mochiglobal:put(?RING_KEY, Ring),
-    riak_kv_test_util:stop_process(riak_kv_vnode_master),
+    riak_kv_test_util:stop_process(riak_kv_vnode),
     riak_kv_test_util:stop_process(riak_core_vnode_sup),
     {ok, _Sup} = riak_core_vnode_sup:start_link(),
     {ok, _Vmaster} = riak_core_vnode_master:start_link(riak_kv_vnode, ?MODULE),
     ok.
 
 stop_servers(_R) ->
-    riak_kv_test_util:stop_process(riak_kv_vnode_master),
+    riak_kv_test_util:stop_process(riak_kv_vnode),
     riak_kv_test_util:stop_process(riak_core_vnode_sup).
 
 legacy_kv_test_() ->
@@ -193,7 +193,7 @@ legacy_kv_test_() ->
      }}.
 
 send_0_11_0_cmd(Cmd, Msg) ->
-    gen_server:cast({riak_kv_vnode_master, node()},
+    gen_server:cast({riak_kv_vnode, node()},
                     {Cmd, {0, node()}, Msg}).
                                   
 

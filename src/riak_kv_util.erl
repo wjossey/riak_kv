@@ -81,7 +81,7 @@ try_cast(Msg, UpNodes, [{Index,Node}|Targets], Sent, Pangs) ->
         false ->
             try_cast(Msg, UpNodes, Targets, Sent, [{Index,Node}|Pangs]);
         true ->
-            gen_server:cast({riak_kv_vnode_master, Node}, make_request(Msg, Index)),
+            gen_server:cast({riak_kv_vnode, Node}, make_request(Msg, Index)),
             try_cast(Msg, UpNodes, Targets, [{Index,Node,Node}|Sent],Pangs)
     end.
 
@@ -102,16 +102,16 @@ fallback(Cmd, UpNodes, [{Index,Node}|Pangs], [{_,FN}|Fallbacks], Sent) ->
     case lists:member(FN, UpNodes) of
         false -> fallback(Cmd, UpNodes, [{Index,Node}|Pangs], Fallbacks, Sent);
         true ->
-            gen_server:cast({riak_kv_vnode_master, FN}, make_request(Cmd, Index)),
+            gen_server:cast({riak_kv_vnode, FN}, make_request(Cmd, Index)),
             fallback(Cmd, UpNodes, Pangs, Fallbacks, [{Index,Node,FN}|Sent])
     end.
 
 
 -spec make_request(vnode_req(), partition()) -> #riak_vnode_req_v1{}.
 make_request(Request, Index) ->
-    riak_core_vnode_master:make_request(Request,
-                                        {fsm, undefined, self()},
-                                        Index).
+    riak_core_vnoder:make_request(Request,
+                                  {fsm, undefined, self()},
+                                  Index).
 
 get_bucket_option(Type, BucketProps) ->
     case proplists:get_value(Type, BucketProps, default) of
