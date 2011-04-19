@@ -243,6 +243,16 @@ mapred_dynamic_inputs_stream(FSMPid, InputDef, Timeout) ->
             throw({invalid_inputdef, InputDef})
     end.
 
+<<<<<<< HEAD
+=======
+%% @spec get(riak_object:bucket(), riak_object:key()) ->
+%%       {ok, riak_object:riak_object()} |
+%%       {error, notfound} |
+%%       {error, timeout} |
+%%       {error, {n_val_violation, N::integer()}} |
+%%       {error, {r_val_unsatisfied, R::integer(), Replies::integer()}} |
+%%       {error, Err :: term()}
+>>>>>>> master
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as the default
 %%      R-value for the nodes have responded with a value or error.
 %% @equiv get(Bucket, Key, R, default_timeout())
@@ -250,9 +260,15 @@ mapred_dynamic_inputs_stream(FSMPid, InputDef, Timeout) ->
 get(Bucket, Key) -> 
     get(Bucket, Key, []).
 
+%% @spec get(riak_object:bucket(), riak_object:key(), options()) ->
+%%       {ok, riak_object:riak_object()} |
+%%       {error, notfound} |
+%%       {error, timeout} |
+%%       {error, {n_val_violation, N::integer()}} |
+%%       {error, {r_val_unsatisfied, R::integer(), Replies::integer()}} |
+%%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R-value for the nodes
 %%      have responded with a value or error.
--spec get(binary(), binary(), riak_kv_get_fsm:options(), riak_client()) -> ok.
 get(Bucket, Key, Options) when is_list(Options) ->
     Me = self(),
     ReqId = mk_reqid(),
@@ -266,6 +282,7 @@ get(Bucket, Key, Options) when is_list(Options) ->
 %%       {error, notfound} |
 %%       {error, timeout} |
 %%       {error, {n_val_violation, N::integer()}} |
+%%       {error, {r_val_unsatisfied, R::integer(), Replies::integer()}} |
 %%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R
 %%      nodes have responded with a value or error.
@@ -279,6 +296,7 @@ get(Bucket, Key, R) ->
 %%       {error, notfound} |
 %%       {error, timeout} |
 %%       {error, {n_val_violation, N::integer()}} |
+%%       {error, {r_val_unsatisfied, R::integer(), Replies::integer()}} |
 %%       {error, Err :: term()}
 %% @doc Fetch the object at Bucket/Key.  Return a value as soon as R
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.

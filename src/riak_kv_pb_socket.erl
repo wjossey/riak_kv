@@ -165,10 +165,13 @@ process_message(rpbgetserverinforeq, State) ->
                                  server_version = get_riak_version()},
     send_msg(Resp, State);
 
-process_message(#rpbgetreq{bucket=B, key=K, r=R0}, 
-                #state{client=C} = State) ->
+process_message(#rpbgetreq{bucket=B, key=K, r=R0, pr=PR0, notfound_ok=NFOk,
+                           basic_quorum=BQ}, #state{client=C} = State) ->
     R = normalize_rw_value(R0),
-    case C:get(B, K, default_r(R)) of
+    PR = normalize_rw_value(PR0),
+    case C:get(B, K, make_option(r, R) ++ make_option(pr, PR) ++
+                     make_option(notfound_ok, NFOk) ++
+                     make_option(basic_quorum, BQ)) of
         {ok, O} ->
             PbContent = riakc_pb:pbify_rpbcontents(riak_object:get_contents(O), []),
             GetResp = #rpbgetresp{content = PbContent,
@@ -181,7 +184,7 @@ process_message(#rpbgetreq{bucket=B, key=K, r=R0},
     end;
 
 process_message(#rpbputreq{bucket=B, key=K, vclock=PbVC, content=RpbContent,
-                           w=W0, dw=DW0, return_body=ReturnBody}, 
+                           w=W0, dw=DW0, pw=PW0, return_body=ReturnBody},
                 #state{client=C} = State) ->
 
     case K of
@@ -200,8 +203,10 @@ process_message(#rpbputreq{bucket=B, key=K, vclock=PbVC, content=RpbContent,
     % erlang_protobuffs encodes as 1/0/undefined
     W = normalize_rw_value(W0),
     DW = normalize_rw_value(DW0),
+    PW = normalize_rw_value(PW0),
     Options = case ReturnBody of 1 -> [returnbody]; true -> [returnbody]; _ -> [] end,
-    case C:put(O, default_w(W), default_dw(DW), default_timeout(), Options) of
+    case C:put(O, make_option(w, W) ++ make_option(dw, DW) ++
+                   make_option(pw, PW) ++ [{timeout, default_timeout()} | Options]) of
         ok when is_binary(ReturnKey) ->
             PutResp = #rpbputresp{key = ReturnKey},
             send_msg(PutResp, State);
@@ -223,7 +228,7 @@ process_message(#rpbputreq{bucket=B, key=K, vclock=PbVC, content=RpbContent,
 process_message(#rpbdelreq{bucket=B, key=K, rw=RW0}, 
                 #state{client=C} = State) ->
     RW = normalize_rw_value(RW0),
-    case C:delete(B, K, default_rw(RW)) of
+    case C:delete(B, K, default_if_undef(RW)) of
         ok ->
             send_msg(rpbdelresp, State);
         {error, notfound} ->  %% delete succeeds if already deleted
@@ -354,31 +359,25 @@ update_pbvc(O0, PbVc) ->
     Vclock = erlify_rpbvc(PbVc),
     riak_object:set_vclock(O0, Vclock).
 
-%% Set default values in the options record if none are provided.
-%% Erlang protobuffs does not support default, so have to do it here.
-default_r(undefined) ->
+%% convert undefined to default so the option can be inherited from the bucket
+default_if_undef(undefined) ->
     default;
-default_r(R) ->
-    R.
+default_if_undef(V) ->
+    V.
 
-default_w(undefined) ->
-    default;
-default_w(W) ->
-    W.
-
-default_dw(undefined) ->
-    default;
-default_dw(DW) ->
-    DW.
-
-default_rw(undefined) ->
-    default;
-default_rw(RW) ->
-    RW.
+%% return a key/value tuple that we can ++ to other options so long as the
+%% value is not default or undefined -- those values are pulled from the
+%% bucket by the get/put FSMs.
+make_option(_, undefined) ->
+    [];
+make_option(_, default) ->
+    [];
+make_option(K, V) ->
+    [{K, V}].
 
 default_timeout() ->
     60000.
-        
+
 %% Convert a vector clock to erlang
 erlify_rpbvc(undefined) ->
     vclock:fresh();

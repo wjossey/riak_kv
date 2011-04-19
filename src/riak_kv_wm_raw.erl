@@ -188,6 +188,10 @@
               w,            %% integer() - w-value for writes
               dw,           %% integer() - dw-value for writes
               rw,           %% integer() - rw-value for deletes
+              pr,           %% integer() - number of primary nodes required in preflist on read
+              pw,           %% integer() - number of primary nodes required in preflist on write
+              basic_quorum, %% boolean() - whether to use basic_quorum
+              notfound_ok,  %% boolean() - whether to treat notfounds as successes
               prefix,       %% string() - prefix for resource uris
               riak,         %% local | {node(), atom()} - params for riak client
               doc,          %% {ok, riak_object()}|{error, term()} - the object found
@@ -364,6 +368,22 @@ malformed_request(RD, Ctx) ->
                                     io_lib:format("R-value unsatisfiable~n",[]),
                                     ResRD)),
                      DocCtx};
+                {error, {r_val_unsatisfied, Requested, Returned}} ->
+                    {{halt, 503},
+                     wrq:set_resp_header("Content-Type", "text/plain",
+                                  wrq:append_to_response_body(
+                                    io_lib:format("R-value unsatisfied: ~p/~p~n",
+                                        [Returned, Requested]),
+                                    ResRD)),
+                    DocCtx};
+                {error, {pr_val_unsatisfied, Requested, Returned}} ->
+                    {{halt, 503},
+                    wrq:set_resp_header("Content-Type", "text/plain",
+                                 wrq:append_to_response_body(
+                                   io_lib:format("PR-value unsatisfied: ~p/~p~n",
+                                        [Returned, Requested]),
+                                   ResRD)),
+                    DocCtx};
                 {error, Err} ->
                     {{halt, 500},
                      wrq:set_resp_header("Content-Type", "text/plain",
@@ -408,12 +428,19 @@ bucket_format_message(RD) ->
 %%      string-encoded integers.  Store the integer values
 %%      in context() if so.
 malformed_rw_params(RD, Ctx) ->
+    Res =
     lists:foldl(fun malformed_rw_param/2,
                 {false, RD, Ctx},
                 [{#ctx.r, "r", "default"},
                  {#ctx.w, "w", "default"},
                  {#ctx.dw, "dw", "default"},
-                 {#ctx.rw, "rw", "default"}]).
+                 {#ctx.rw, "rw", "default"},
+                 {#ctx.pw, "pw", "default"},
+                 {#ctx.pr, "pr", "default"}]),
+    lists:foldl(fun malformed_boolean_param/2,
+                Res,
+                [{#ctx.basic_quorum, "basic_quorum", "default"},
+                 {#ctx.notfound_ok, "notfound_ok", "default"}]).
 
 %% @spec malformed_rw_param({Idx::integer(), Name::string(), Default::string()},
 %%                          {boolean(), reqdata(), context()}) ->
@@ -428,9 +455,33 @@ malformed_rw_param({Idx, Name, Default}, {Result, RD, Ctx}) ->
         _ ->
             {true,
              wrq:append_to_resp_body(
-               io_lib:format("~s query parameter must be an integer~n",
+               io_lib:format("~s query parameter must be an integer or "
+                   "one of the following words: 'one', 'quorum' or 'all'~n",
                              [Name]),
                wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
+             Ctx}
+    end.
+
+%% @spec malformed_boolean_param({Idx::integer(), Name::string(), Default::string()},
+%%                          {boolean(), reqdata(), context()}) ->
+%%          {boolean(), reqdata(), context()}
+%% @doc Check that a specific query param is a
+%%      string-encoded boolean.  Store its result in context() if it
+%%      is, or print an error message in reqdata() if it is not.
+malformed_boolean_param({Idx, Name, Default}, {Result, RD, Ctx}) ->
+    case string:to_lower(wrq:get_qs_value(Name, Default, RD)) of
+        "true" ->
+            {Result, RD, setelement(Idx, Ctx, true)};
+        "false" ->
+            {Result, RD, setelement(Idx, Ctx, false)};
+        "default" ->
+            {Result, RD, setelement(Idx, Ctx, default)};
+        _ ->
+            {true,
+            wrq:append_to_resp_body(
+              io_lib:format("~s query parameter must be true or false~n",
+                            [Name]),
+              wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
              Ctx}
     end.
 
@@ -523,11 +574,7 @@ charsets_provided(RD, Ctx0) ->
                 multiple_choices ->
                     {no_charset, RD, DocCtx}
             end;
-        {error, notfound} ->
-            {no_charset, RD, DocCtx};
-        {error, timeout} ->
-            {no_charset, RD, DocCtx};
-        {error, {n_val_violation, _}} ->
+        {error, _} ->
             {no_charset, RD, DocCtx}
     end.
 
@@ -556,11 +603,7 @@ encodings_provided(RD, Ctx0) ->
                 multiple_choices ->
                     {default_encodings(), RD, DocCtx}
             end;
-        {error, notfound} ->
-            {default_encodings(), RD, DocCtx};
-        {error, timeout} ->
-            {default_encodings(), RD, DocCtx};
-        {error, {n_val_violation, _}} ->
+        {error, _} ->
             {default_encodings(), RD, DocCtx}
     end.
 
@@ -633,14 +676,10 @@ resource_exists(RD, Ctx0) ->
                                MDs),
                      RD, DocCtx#ctx{vtag=Vtag}}
             end;
-        {error, notfound} ->
-            {false, RD, DocCtx};
-        {error, timeout} ->
-            {{halt, 503}, RD, DocCtx};
-        {error, {n_val_violation, N}} ->
-            Msg = io_lib:format("Specified r/w/dw values invalid for bucket"
-                                " n value of ~p~n", [N]),
-            {{halt, 400}, wrq:append_to_response_body(Msg, RD), DocCtx}
+        {error, _} ->
+            %% This should never actually be reached because all the error
+            %% conditions from ensure_doc are handled up in malformed_request.
+            {false, RD, DocCtx}
     end.
 
 %% @spec produce_toplevel_body(reqdata(), context()) -> {binary(), reqdata(), context()}
@@ -853,15 +892,23 @@ accept_doc_body(RD, Ctx=#ctx{bucket=B, key=K, client=C, links=L}) ->
     MDDoc = riak_object:update_metadata(VclockDoc, UserMetaMD),
     Doc = riak_object:update_value(MDDoc, accept_value(CType, wrq:req_body(RD))),
     Options = case wrq:get_qs_value(?Q_RETURNBODY, RD) of ?Q_TRUE -> [returnbody]; _ -> [] end,
-    case C:put(Doc, Ctx#ctx.w, Ctx#ctx.dw, 60000, Options) of
+    case C:put(Doc, [{w, Ctx#ctx.w}, {dw, Ctx#ctx.dw}, {pw, Ctx#ctx.pw}, {timeout, 60000} |
+                Options]) of
         {error, precommit_fail} ->
             {{halt, 403}, send_precommit_error(RD, undefined), Ctx};
         {error, {precommit_fail, Reason}} ->
             {{halt, 403}, send_precommit_error(RD, Reason), Ctx};
         {error, {n_val_violation, N}} ->
-            Msg = io_lib:format("Specified r/w/dw values invalid for bucket"
+            Msg = io_lib:format("Specified w/dw/pw values invalid for bucket"
                                 " n value of ~p~n", [N]),
             {{halt, 400}, wrq:append_to_response_body(Msg, RD), Ctx};
+        {error, {pw_val_unsatisfied, Requested, Returned}} ->
+            Msg = io_lib:format("PW-value unsatisfied: ~p/~p~n", [Returned,
+                    Requested]),
+            {{halt, 503}, wrq:append_to_response_body(Msg, RD), Ctx};
+        {error, too_many_fails} ->
+            {{halt, 503}, wrq:append_to_response_body("Too Many write failures"
+                                                      " to satisfy W/DW\n", RD), Ctx};
         {error, timeout} ->
             {{halt, 503},
              wrq:set_resp_header("Content-Type", "text/plain",
@@ -1108,8 +1155,10 @@ decode_vclock_header(RD) ->
 %%      convenience for memoizing the result of a get so it can be
 %%      used in multiple places in this resource, without having to
 %%      worry about the order of executing of those places.
-ensure_doc(Ctx=#ctx{doc=undefined, bucket=B, key=K, client=C, r=R}) ->
-    Ctx#ctx{doc=C:get(B, K, R)};
+ensure_doc(Ctx=#ctx{doc=undefined, bucket=B, key=K, client=C, r=R,
+        pr=PR, basic_quorum=Quorum, notfound_ok=NotFoundOK}) ->
+    Ctx#ctx{doc=C:get(B, K, [{r, R}, {pr, PR}, {basic_quorum, Quorum},
+                {notfound_ok, NotFoundOK}])};
 ensure_doc(Ctx) -> Ctx.
 
 %% @spec delete_resource(reqdata(), context()) -> {true, reqdata(), context()}
