@@ -33,6 +33,7 @@
 -export([mapred_dynamic_inputs_stream/3]).
 -export([get/2, get/3,get/4]).
 -export([put/1, put/2,put/3,put/4,put/5]).
+-export([update/2, update/3, update/4, update/5]).
 -export([delete/2,delete/3,delete/4]).
 -export([list_keys/1,list_keys/2,list_keys/3]).
 -export([stream_list_keys/1,stream_list_keys/2,stream_list_keys/3,
@@ -330,6 +331,27 @@ put(RObj, W, DW) -> THIS:put(RObj, [{w, W}, {dw, DW}]).
 %%      at least DW nodes have stored it in their storage backend, or
 %%      TimeoutMillisecs passes.
 put(RObj, W, DW, Timeout) -> THIS:put(RObj,  [{w, W}, {dw, DW}, {timeout, Timeout}]).
+
+update(BKey, MFA) ->
+    THIS:update(BKey, MFA, []).
+
+update({Bucket, Key}, {Mod, Fun, Arg}, Options) when is_list(Options) ->
+    Me = self(),
+    ReqId = mk_reqid(),
+    riak_kv_update_fsm:start_link({raw, ReqId, Me}, 
+                                  {{Bucket,Key},{Mod, Fun, Arg}}, 
+                                  [{client_id, ClientId}|Options]),
+    %% TODO: Investigate adding a monitor here and eliminating the timeout.
+    Timeout = recv_timeout(Options),
+    wait_for_reqid(ReqId, Timeout);
+update(BKey, MFA, W) ->
+    THIS:update(BKey, MFA, [{w,W},{dw,W}]).
+
+update(BKey, MFA, W, DW) ->
+    THIS:update(BKey, MFA, [{w,W},{dw,DW}]).
+
+update(BKey, MFA, W, DW, Timeout) ->
+    THIS:update(BKey, MFA, [{w,W},{dw,DW},{timeout, Timeout}]).
 
 %% @spec put(RObj::riak_object:riak_object(), W :: integer(), RW :: integer(),
 %%           TimeoutMillisecs :: integer(), Options::list()) ->

@@ -32,6 +32,8 @@
          mget/3,
          del/3,
          put/6,
+         update/6,
+         update/7,
          readrepair/6,
          list_keys/4,
          fold/3,
@@ -50,6 +52,8 @@
          handle_handoff_data/2,
          encode_handoff_item/2,
          handle_exit/3]).
+
+-export([enforce_allow_mult/2]).
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_map_phase.hrl").
@@ -128,6 +132,24 @@ put(Preflist, BKey, Obj, ReqId, StartTime, Options, Sender)
                                    Sender,
                                    riak_kv_vnode_master).
 
+update(Preflist, BKey, MFA, ReqId, StartTime, Options) when is_integer(StartTime) ->
+   update(Preflist, BKey, MFA, ReqId, StartTime, Options, {fsm, undefined, self()}).
+
+update(Preflist, BKey, MFA, ReqId, StartTime, Options, Sender) 
+  when is_integer(StartTime) ->
+    riak_core_vnode_master:command(Preflist,
+                                   ?KV_UPDATE_REQ{
+                                      bkey=BKey,
+                                      apply_fun=MFA,
+                                      lm_time=now(),
+                                      client_id=proplists:get_value(client_id, Options),
+                                      req_id=ReqId,
+                                      start_time=StartTime,
+                                      options=Options},
+                                   Sender,
+                                   riak_kv_vnode_master).
+
+
 %% Do a put without sending any replies
 readrepair(Preflist, BKey, Obj, ReqId, StartTime, Options) ->
     put(Preflist, BKey, Obj, ReqId, StartTime, [rr | Options], ignore).
@@ -162,6 +184,19 @@ init([Index]) ->
 
     {ok, #state{idx=Index, mod=Mod, modstate=ModState, mrjobs=dict:new()}}.
 
+mod_call(Function, Args, #state{mod=Mod, modstate=ModState}) ->
+    erlang:apply(Mod, Function, [ModState|Args]).
+
+make_op(Mod, Sender, BKey, Object, Options, State=#state{idx=Idx}) ->
+    riak_kv_vnode_op:new(
+      Mod, 
+      fun(Function,Args) -> mod_call(Function,Args,State) end,
+      Idx,
+      Sender,
+      BKey,
+      Object,
+      Options).
+
 handle_command(?KV_PUT_REQ{bkey=BKey,
                            object=Object,
                            req_id=ReqId,
@@ -172,7 +207,22 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
     do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
     {noreply, State};
-
+handle_command(?KV_UPDATE_REQ{bkey=BKey,
+                             apply_fun=ApplyFun,
+                             req_id=ReqId,
+                             start_time=StartTime,
+                             options=VNodeOptions},
+               Sender, State) ->
+    riak_kv_mapred_cache:eject(BKey),
+    Options = [{vnode_options, VNodeOptions}|
+               lists:zip(record_info(fields, putargs), 
+                         tl(tuple_to_list(
+                              make_putargs(BKey, ApplyFun, ReqId, StartTime, 
+                                           VNodeOptions))))],
+    {ok, Op} = make_op(riak_kv_vnode_op_update,Sender,BKey,ApplyFun,Options,
+                       State),
+    riak_kv_vnode_op:execute(Op),
+    {noreply, State};
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
     do_get(Sender, BKey, ReqId, State);
 handle_command(?KV_MGET_REQ{bkeys=BKeys, req_id=ReqId, from=From}, _Sender, State) ->
@@ -281,6 +331,28 @@ handle_exit(_Pid, _Reason, State) ->
     {stop, linked_process_crash, State}.
 
 %% old vnode helper functions
+
+make_putargs({Bucket, _Key}=BKey, Object, ReqID, StartTime, Options) ->
+    case proplists:get_value(bucket_props, Options) of
+        undefined ->
+            {ok,Ring} = riak_core_ring_manager:get_my_ring(),
+            BProps = riak_core_bucket:get_bucket(Bucket, Ring);
+        BProps ->
+            BProps
+    end,
+    case proplists:get_value(rr, Options, false) of
+        true ->
+            PruneTime = undefined;
+        false ->
+            PruneTime = StartTime
+    end,
+    #putargs{returnbody=proplists:get_value(returnbody,Options,false),
+             lww=proplists:get_value(last_write_wins, BProps, false),
+             bkey=BKey,
+             robj=Object,
+             reqid=ReqID,
+             bprops=BProps,
+             prunetime=PruneTime}.
 
 
 %store_call(State=#state{mod=Mod, modstate=ModState}, Msg) ->

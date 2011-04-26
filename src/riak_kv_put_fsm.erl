@@ -40,7 +40,7 @@
 -export([init/1, handle_event/3, handle_sync_event/4,
          handle_info/3, terminate/3, code_change/4]).
 -export([prepare/2, validate/2, precommit/2, execute/2, waiting_vnode/2, postcommit/2, finish/2]).
-
+-export([update_last_modified/1, update_last_modified/2]).
 
 -type detail_info() :: timing.
 -type detail() :: true |
@@ -470,6 +470,9 @@ apply_updates(State = #state{robj = RObj}) ->
 %%
 %% @private
 update_last_modified(RObj) ->
+    update_last_modified(RObj, erlang:now()).
+
+update_last_modified(RObj, Time) ->
     MD0 = case dict:find(clean, riak_object:get_update_metadata(RObj)) of
               {ok, true} ->
                   %% There have been no changes to updatemetadata. If we stash the
@@ -488,7 +491,7 @@ update_last_modified(RObj) ->
                   riak_object:get_update_metadata(RObj)
           end,
     NewMD = dict:store(?MD_VTAG, make_vtag(RObj),
-                       dict:store(?MD_LASTMOD, erlang:now(),
+                       dict:store(?MD_LASTMOD, Time,
                                   MD0)),
     riak_object:update_metadata(RObj, NewMD).
 
