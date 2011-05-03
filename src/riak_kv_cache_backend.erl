@@ -396,7 +396,6 @@ gb_trees_fold_inner(Fun, Acc, {Key, Val, Iterator}) ->
 %% Test
 %%
 
-% @private
 simple_test() ->
     riak_kv_backend:standard_test(?MODULE, []).
     
@@ -407,7 +406,7 @@ eqc_test() ->
 -endif. % EQC
 
 
-% @private
+
 ttl_test() ->
     % Set TTL to 0.02 seconds...
     Config = [{riak_kv_cache_backend_ttl, 0.02}, {riak_kv_cache_backend_max_ttl, 0.04}],
@@ -462,7 +461,6 @@ max_ttl_test() ->
     
     ok.
     
-% @private
 max_memory_test() ->
     % Set max size to 1.5kb...
     Config = [{riak_kv_cache_backend_memory, 1.5 * (1 / 1024)}],

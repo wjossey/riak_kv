@@ -44,21 +44,20 @@
 %% Public API
 %% ===================================================================
 
-%% @spec is_x_deleted(riak_object:riak_object()) -> boolean()
 %% @doc 'true' if all contents of the input object are marked
 %%      as deleted; 'false' otherwise
 %% @equiv obj_not_deleted(Obj) == undefined
+-spec is_x_deleted(riak_object:riak_object()) -> boolean().
 is_x_deleted(Obj) ->
     case obj_not_deleted(Obj) of
         undefined -> true;
         _ -> false
     end.
 
-%% @spec obj_not_deleted(riak_object:riak_object()) ->
-%%          undefined|riak_object:riak_object()
 %% @doc Determine whether all contents of an object are marked as
 %%      deleted.  Return is the atom 'undefined' if all contents
 %%      are marked deleted, or the input Obj if any of them are not.
+-spec obj_not_deleted(riak_object:riak_object()) -> undefined | riak_object:riak_object().
 obj_not_deleted(Obj) ->
     case [{M, V} || {M, V} <- riak_object:get_contents(Obj),
                     dict:is_key(<<"X-Riak-Deleted">>, M) =:= false] of
@@ -107,7 +106,7 @@ fallback(Cmd, UpNodes, [{Index,Node}|Pangs], [{_,FN}|Fallbacks], Sent) ->
     end.
 
 
--spec make_request(vnode_req(), partition()) -> #riak_vnode_req_v1{}.
+-spec make_request(T, chash:partition()) -> vnode_req(T).
 make_request(Request, Index) ->
     riak_core_vnode_master:make_request(Request,
                                         {fsm, undefined, self()},
@@ -126,11 +125,17 @@ expand_value(Type, default, BucketProps) ->
 expand_value(_Type, Value, _BucketProps) ->
     Value.
 
+-spec expand_rw_value(riak_client:quorum_type(),
+                      riak_client:symbolic_rw_val(),
+                      riak_core_bucket:bucket_props(),
+                      riak_client:n_val()) -> riak_client:numeric_rw_val() | error.
 expand_rw_value(Type, default, BucketProps, N) ->
     normalize_rw_value(get_bucket_option(Type, BucketProps), N);
 expand_rw_value(_Type, Val, _BucketProps, N) ->
     normalize_rw_value(Val, N).
 
+-spec normalize_rw_value(riak_client:quorum_val()|binary(), riak_client:n_val()) ->
+                                riak_client:numeric_rw_val() | error.
 normalize_rw_value(RW, _N) when is_integer(RW) -> RW;
 normalize_rw_value(RW, N) when is_binary(RW) ->
     try

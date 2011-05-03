@@ -36,8 +36,8 @@
 
 -type msg() ::  atom() | tuple().
 
--record(state, {sock,      % protocol buffers socket
-                client,    % local client
+-record(state, {sock :: port(),      % protocol buffers socket
+                client :: riak_client:riak_client(),    % local client
                 req,       % current request (for multi-message requests like list keys)
                 req_ctx}). % context to go along with request (partial results, request ids etc)
 

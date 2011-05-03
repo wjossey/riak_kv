@@ -32,39 +32,37 @@
          handle_info/3, terminate/3, code_change/4]).
 -export([prepare/2,validate/2,execute/2,waiting_vnode_r/2,waiting_read_repair/2]).
 
--type option() :: {r, pos_integer()} |         %% Minimum number of successful responses
-                  {pr, non_neg_integer()} |    %% Minimum number of primary vnodes participating
+-type option() :: {r, riak_client:r_val()} |   %% Minimum number of successful responses
+                  {pr, riak_client:pr_val()} |  %% Minimum number of primary vnodes participating
                   {basic_quorum, boolean()} |  %% Whether to use basic quorum (return early 
-                                               %% in some failure cases.
                   {notfound_ok, boolean()}  |  %% Count notfound reponses as successful.
-                  {timeout, pos_integer() | infinity}. %% Timeout for vnode responses
+                  {timeout, timeout()}. %% Timeout for vnode responses
 -type options() :: [option()].
--type req_id() :: non_neg_integer().
 
 -export_type([options/0, option/0]).
 
--record(state, {from :: {raw, req_id(), pid()},
+-record(state, {from :: {raw, riak_client:req_id(), pid()},
                 options=[] :: options(),
-                n :: pos_integer(),
-                r :: pos_integer(),
+                n :: riak_client:n_val(),
+                r :: riak_client:quorum_val_pos(),
                 fail_threshold :: non_neg_integer(),
                 allowmult :: boolean(),
                 notfound_ok :: boolean(),
                 preflist2 :: riak_core_apl:preflist2(),
-                req_id :: non_neg_integer(),
+                req_id :: riak_client:req_id(),
                 starttime :: pos_integer(),
-                replied_r = [] :: list(),
-                replied_notfound = [] :: list(),
-                replied_fail = [] :: list(),
+                replied_r = [] :: [{riak_object:riak_object(), chash:partition()}],
+                replied_notfound = [] :: [chash:partition()],
+                replied_fail = [] :: [{term(), chash:partition()}],
                 num_r = 0 :: non_neg_integer(),
                 num_notfound = 0 :: non_neg_integer(),
                 num_fail = 0 :: non_neg_integer(),
                 final_obj :: {ok, riak_object:riak_object()} |
                              tombstone | {error, notfound},
-                timeout :: infinity | pos_integer(),
+                timeout :: timeout(),
                 tref    :: reference(),
-                bkey :: {riak_object:bucket(), riak_object:key()},
-                bucket_props,
+                bkey :: riak_object:bkey(),
+                bucket_props :: riak_core_bucket:bucket_props(),
                 startnow :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
                 get_usecs :: non_neg_integer()
                }).
@@ -78,9 +76,13 @@
 %% ===================================================================
 
 %% In place only for backwards compatibility
+-spec start(riak_client:req_id(), riak_object:bucket(), riak_object:key(),
+            riak_client:r_val(), timeout(), term()) -> {ok, pid()}.
 start(ReqId,Bucket,Key,R,Timeout,From) ->
     start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 
+-spec start_link(riak_client:req_id(), riak_object:bucket(), riak_object:key(),
+                 riak_client:r_val(), timeout(), term()) -> {ok, pid()}.
 start_link(ReqId,Bucket,Key,R,Timeout,From) ->
     start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 
@@ -92,8 +94,9 @@ start_link(ReqId,Bucket,Key,R,Timeout,From) ->
 %%                             in some failure cases.
 %% {notfound_ok, boolean()}  - Count notfound reponses as successful.
 %% {timeout, pos_integer() | infinity} -  Timeout for vnode responses
--spec start_link({raw, req_id(), pid()}, binary(), binary(), options()) ->
-                        {ok, pid()} | {error, any()}.
+-spec start_link({raw, riak_client:req_id(), pid()}, riak_object:bucket(), 
+                 riak_object:key(), options()) ->
+                        {ok, pid()}.
 start_link(From, Bucket, Key, GetOptions) ->
     gen_fsm:start_link(?MODULE, [From, Bucket, Key, GetOptions], []).
 

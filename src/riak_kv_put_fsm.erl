@@ -47,9 +47,9 @@
                   false |
                   [detail_info()].
 
--type option() :: {pw, non_neg_integer()} | %% Min number of primary (owner) vnodes participating
-                  {w,  non_neg_integer()} | %% Minimum number of vnodes receiving write
-                  {dw, non_neg_integer()} | %% Minimum number of vnodes completing write
+-type option() :: {pw, riak_client:pw_val()} | %% Min number of primary (owner) vnodes participating
+                  {w,  riak_client:w_val()}  | %% Minimum number of vnodes receiving write
+                  {dw, riak_client:dw_val()} | %% Minimum number of vnodes completing write
                   {timeout, timeout()} |
                   {details, detail()}.      %% Request additional details about request
                                             %% added as extra element at the end of result tuplezd 
@@ -59,26 +59,26 @@
 
 -record(state, {from :: {raw, integer(), pid()},
                 robj :: riak_object:riak_object(),
-                options=[] :: options(),
-                n :: pos_integer(),
-                w :: non_neg_integer(),
-                dw :: non_neg_integer(),
+                options = [] :: options(),
+                n :: riak_client:n_val(),
+                w :: riak_client:quorum_val_pos(),
+                dw :: riak_client:quorum_val_non_neg(),
                 preflist2 :: riak_core_apl:preflist2(),
-                bkey :: {riak_object:bucket(), riak_object:key()},
-                req_id :: pos_integer(),
+                bkey :: riak_object:bkey(),
+                req_id :: riak_client:req_id(),
                 starttime :: pos_integer(), % start time to send to vnodes
-                replied_w :: list(),
-                replied_dw :: list(),
-                replied_fail :: list(),
-                timeout :: pos_integer()|infinity,
+                replied_w :: [chash:partition()],
+                replied_dw :: [chash:partition()],
+                replied_fail :: [chash:partition()],
+                timeout :: timeout(),
                 tref    :: reference(),
-                vnode_options=[] :: list(),
+                vnode_options=[] :: put_options(),
                 returnbody :: boolean(),
-                resobjs=[] :: list(),
+                resobjs=[] :: [riak_object:riak_object()],
                 allowmult :: boolean(),
                 precommit=[] :: list(),
                 postcommit=[] :: list(),
-                bucket_props:: list(),
+                bucket_props:: riak_core_bucket:bucket_props(),
                 num_w = 0 :: non_neg_integer(),
                 num_dw = 0 :: non_neg_integer(),
                 num_fail = 0 :: non_neg_integer(),

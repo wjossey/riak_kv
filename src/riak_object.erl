@@ -28,27 +28,31 @@
 -endif.
 -include("riak_kv_wm_raw.hrl").
 
--export_type([riak_object/0, bucket/0, key/0, value/0]).
+-export_type([riak_object/0, bucket/0, key/0, bkey/0, value/0]).
 
 -type key() :: binary().
 -type bucket() :: binary().
-%% -type bkey() :: {bucket(), key()}.
+-type bkey() :: {bucket(), key()}.
 -type value() :: term().
+-type metadata() :: dict().
 
 -record(r_content, {
-          metadata :: dict(),
+          metadata :: metadata(),
           value :: term()
          }).
+
+-type r_content() :: #r_content{}.
 
 %% Opaque container for Riak objects, a.k.a. riak_object()
 -record(r_object, {
           bucket :: bucket(),
           key :: key(),
-          contents :: [#r_content{}],
+          contents :: [r_content()],
           vclock = vclock:fresh() :: vclock:vclock(),
-          updatemetadata=dict:store(clean, true, dict:new()) :: dict(),
-          updatevalue :: term()
+          updatemetadata=dict:store(clean, true, dict:new()) :: metadata(),
+          updatevalue :: value()
          }).
+
 -opaque riak_object() :: #r_object{}.
 
 -define(MAX_KEY_SIZE, 65536).
@@ -69,7 +73,7 @@ new(B, K, V) when is_binary(B), is_binary(K) ->
 
 %% @doc Constructor for new riak objects with an initial content-type.
 -spec new(Bucket::bucket(), Key::key(), Value::value(), 
-          string() | dict() | no_initial_metadata) -> riak_object().
+          string() | metadata() | no_initial_metadata) -> riak_object().
 new(B, K, V, C) when is_binary(B), is_binary(K), is_list(C) ->
     new(B, K, V, dict:from_list([{?MD_CTYPE, C}]));
 
@@ -143,13 +147,13 @@ equal_contents([C1|R1],[C2|R2]) ->
             end
     end.
 
-%% @spec reconcile([riak_object()], boolean()) -> riak_object()
 %% @doc  Reconcile a list of riak objects.  If AllowMultiple is true,
 %%       the riak_object returned may contain multiple values if Objects
 %%       contains sibling versions (objects that could not be syntactically
 %%       merged).   If AllowMultiple is false, the riak_object returned will
 %%       contain the value of the most-recently-updated object, as per the
 %%       X-Riak-Last-Modified header.
+-spec reconcile([riak_object()], boolean()) -> riak_object().
 reconcile(Objects, AllowMultiple) ->
     RObjs = reconcile(Objects),
     AllContents = lists:flatten([O#r_object.contents || O <- RObjs]),
@@ -165,12 +169,13 @@ reconcile(Objects, AllowMultiple) ->
                    updatemetadata=dict:store(clean, true, dict:new()),
                    updatevalue=undefined}.
 
-%% @spec ancestors([riak_object()]) -> [riak_object()]
 %% @doc  Given a list of riak_object()s, return the objects that are pure
 %%       ancestors of other objects in the list, if any.  The changes in the
 %%       objects returned by this function are guaranteed to be reflected in
 %%       the other objects in Objects, and can safely be discarded from the list
 %%       without losing data.
+-spec ancestors(pure_baloney_to_fool_dialyzer) -> [riak_object()];
+               ([riak_object()]) -> [riak_object()].
 ancestors(pure_baloney_to_fool_dialyzer) ->
     [#r_object{vclock = vclock:fresh()}];
 ancestors(Objects) ->
@@ -180,7 +185,7 @@ ancestors(Objects) ->
                 || O1 <- Objects],
     lists:flatten(ToRemove).
 
-%% @spec reconcile([riak_object()]) -> [riak_object()]
+-spec reconcile([riak_object()]) -> [riak_object()].
 reconcile(Objects) ->
     All = sets:from_list(Objects),
     Del = sets:from_list(ancestors(Objects)),
@@ -201,9 +206,9 @@ compare_content_dates(C1,C2) ->
       dict:fetch(<<"X-Riak-Last-Modified">>, C1#r_content.metadata),
       dict:fetch(<<"X-Riak-Last-Modified">>, C2#r_content.metadata)).
 
-%% @spec merge(riak_object(), riak_object()) -> riak_object()
 %% @doc  Merge the contents and vclocks of OldObject and NewObject.
 %%       Note:  This function calls apply_updates on NewObject.
+-spec merge(riak_object(), riak_object()) -> riak_object().
 merge(OldObject, NewObject) ->
     NewObj1 = apply_updates(NewObject),
     OldObject#r_object{contents=lists:umerge(lists:usort(NewObject#r_object.contents),
@@ -213,9 +218,9 @@ merge(OldObject, NewObject) ->
                        updatemetadata=dict:store(clean, true, dict:new()),
                        updatevalue=undefined}.
 
-%% @spec apply_updates(riak_object()) -> riak_object()
 %% @doc  Promote pending updates (made with the update_value() and
 %%       update_metadata() calls) to this riak_object.
+-spec apply_updates(riak_object()) -> riak_object().
 apply_updates(Object=#r_object{}) ->
     VL = case Object#r_object.updatevalue of
              undefined ->
@@ -238,75 +243,75 @@ apply_updates(Object=#r_object{}) ->
                  updatemetadata=dict:store(clean, true, dict:new()),
                  updatevalue=undefined}.
 
-%% @spec bucket(riak_object()) -> bucket()
 %% @doc Return the containing bucket for this riak_object.
+-spec bucket(riak_object()) -> bucket().
 bucket(#r_object{bucket=Bucket}) -> Bucket.
 
-%% @spec key(riak_object()) -> key()
 %% @doc  Return the key for this riak_object.
+-spec key(riak_object()) -> key().
 key(#r_object{key=Key}) -> Key.
 
-%% @spec vclock(riak_object()) -> vclock:vclock()
 %% @doc  Return the vector clock for this riak_object.
+-spec vclock(riak_object()) -> vclock:vclock().
 vclock(#r_object{vclock=VClock}) -> VClock.
 
-%% @spec value_count(riak_object()) -> non_neg_integer()
 %% @doc  Return the number of values (siblings) of this riak_object.
+-spec value_count(riak_object()) -> non_neg_integer().
 value_count(#r_object{contents=Contents}) -> length(Contents).
 
-%% @spec get_contents(riak_object()) -> [{dict(), value()}]
 %% @doc  Return the contents (a list of {metadata, value} tuples) for
 %%       this riak_object.
+-spec get_contents(riak_object()) -> [{metadata(),value()}].
 get_contents(#r_object{contents=Contents}) ->
     [{Content#r_content.metadata, Content#r_content.value} ||
         Content <- Contents].
 
-%% @spec get_metadata(riak_object()) -> dict()
 %% @doc  Assert that this riak_object has no siblings and return its associated
 %%       metadata.  This function will fail with a badmatch error if the
 %%       object has siblings (value_count() > 1).
+-spec get_metadata(riak_object()) -> metadata().
 get_metadata(O=#r_object{}) ->
     % this blows up intentionally (badmatch) if more than one content value!
     [{Metadata,_V}] = get_contents(O),
     Metadata.
 
-%% @spec get_metadatas(riak_object()) -> [dict()]
 %% @doc  Return a list of the metadata values for this riak_object.
+-spec get_metadatas(riak_object()) -> [metadata()].
 get_metadatas(#r_object{contents=Contents}) ->
     [Content#r_content.metadata || Content <- Contents].
 
-%% @spec get_values(riak_object()) -> [value()]
 %% @doc  Return a list of object values for this riak_object.
+-spec get_values(riak_object()) -> [value()].
 get_values(#r_object{contents=C}) -> [Content#r_content.value || Content <- C].
 
-%% @spec get_value(riak_object()) -> value()
 %% @doc  Assert that this riak_object has no siblings and return its associated
 %%       value.  This function will fail with a badmatch error if the object
 %%       has siblings (value_count() > 1).
+-spec get_value(riak_object()) -> value().
 get_value(Object=#r_object{}) ->
     % this blows up intentionally (badmatch) if more than one content value!
     [{_M,Value}] = get_contents(Object),
     Value.
 
-%% @spec update_metadata(riak_object(), dict()) -> riak_object()
 %% @doc  Set the updated metadata of an object to M.
+-spec update_metadata(riak_object(), metadata()) -> riak_object().
 update_metadata(Object=#r_object{}, M) ->
     Object#r_object{updatemetadata=dict:erase(clean, M)}.
 
-%% @spec update_value(riak_object(), value()) -> riak_object()
 %% @doc  Set the updated value of an object to V
+-spec update_value(riak_object(), value()) -> riak_object().
 update_value(Object=#r_object{}, V) -> Object#r_object{updatevalue=V}.
 
-%% @spec get_update_metadata(riak_object()) -> dict()
 %% @doc  Return the updated metadata of this riak_object.
+-spec get_update_metadata(riak_object()) -> metadata().
 get_update_metadata(#r_object{updatemetadata=UM}) -> UM.
 
-%% @spec get_update_value(riak_object()) -> value()
 %% @doc  Return the updated value of this riak_object.
+-spec get_update_value(riak_object()) -> value().
 get_update_value(#r_object{updatevalue=UV}) -> UV.
 
-%% @spec set_vclock(riak_object(), vclock:vclock()) -> riak_object()
 %% @doc  INTERNAL USE ONLY.  Set the vclock of riak_object O to V.
+-spec set_vclock(riak_object(), vclock:vclock()) -> riak_object().
 set_vclock(Object=#r_object{}, VClock) -> Object#r_object{vclock=VClock}.
 
 %% @doc  Increment the entry for ClientId in O's vclock.
@@ -319,11 +324,12 @@ increment_vclock(Object=#r_object{}, ClientId) ->
 increment_vclock(Object=#r_object{}, ClientId, Timestamp) ->
     Object#r_object{vclock=vclock:increment(ClientId, Timestamp, Object#r_object.vclock)}.
 
-%% @spec set_contents(riak_object(), [{dict(), value()}]) -> riak_object()
+
 %% @doc  INTERNAL USE ONLY.  Set the contents of riak_object to the
 %%       {Metadata, Value} pairs in MVs. Normal clients should use the
 %%       set_update_[value|metadata]() + apply_updates() method for changing
 %%       object contents.
+-spec set_contents(riak_object(), [{metadata(), value()}]) -> riak_object().
 set_contents(Object=#r_object{}, MVs) when is_list(MVs) ->
     Object#r_object{contents=[#r_content{metadata=M,value=V} || {M, V} <- MVs]}.
 
@@ -425,10 +431,13 @@ is_updated(_Object=#r_object{updatemetadata=M,updatevalue=V}) ->
             end
     end.
 
-
+-spec syntactic_merge(riak_object(), riak_object(), riak_client:client_id()) ->
+                             riak_object().
 syntactic_merge(CurrentObject, NewObject, FromClientId) ->
     syntactic_merge(CurrentObject, NewObject, FromClientId, vclock:timestamp()).
 
+-spec syntactic_merge(riak_object(), riak_object(), riak_client:client_id(), 
+                      vclock:timestamp()) -> riak_object().
 syntactic_merge(CurrentObject, NewObject, FromClientId, Timestamp) ->
     case ancestors([CurrentObject, NewObject]) of
         [OlderObject] ->
