@@ -192,6 +192,7 @@
               pw,           %% integer() - number of primary nodes required in preflist on write
               basic_quorum, %% boolean() - whether to use basic_quorum
               notfound_ok,  %% boolean() - whether to treat notfounds as successes
+              details,      %% boolean() - include fsm details?
               prefix,       %% string() - prefix for resource uris
               riak,         %% local | {node(), atom()} - params for riak client
               doc,          %% {ok, riak_object()}|{error, term()} - the object found
@@ -440,7 +441,8 @@ malformed_rw_params(RD, Ctx) ->
     lists:foldl(fun malformed_boolean_param/2,
                 Res,
                 [{#ctx.basic_quorum, "basic_quorum", "default"},
-                 {#ctx.notfound_ok, "notfound_ok", "default"}]).
+                 {#ctx.notfound_ok, "notfound_ok", "default"},
+                 {#ctx.details, "details", "false"}]).
 
 %% @spec malformed_rw_param({Idx::integer(), Name::string(), Default::string()},
 %%                          {boolean(), reqdata(), context()}) ->
@@ -891,7 +893,8 @@ accept_doc_body(RD, Ctx=#ctx{bucket=B, key=K, client=C, links=L}) ->
     UserMetaMD = dict:store(?MD_USERMETA, UserMeta, LinkMD),
     MDDoc = riak_object:update_metadata(VclockDoc, UserMetaMD),
     Doc = riak_object:update_value(MDDoc, accept_value(CType, wrq:req_body(RD))),
-    Options = case wrq:get_qs_value(?Q_RETURNBODY, RD) of ?Q_TRUE -> [returnbody]; _ -> [] end,
+    Options0 = case wrq:get_qs_value(?Q_RETURNBODY, RD) of ?Q_TRUE -> [returnbody]; _ -> [] end,
+    Options =  case Ctx#ctx.details of true -> [{details, true}|Options0]; _ -> Options0 end,
     case C:put(Doc, [{w, Ctx#ctx.w}, {dw, Ctx#ctx.dw}, {pw, Ctx#ctx.pw}, {timeout, 60000} |
                 Options]) of
         {error, precommit_fail} ->
@@ -918,11 +921,29 @@ accept_doc_body(RD, Ctx=#ctx{bucket=B, key=K, client=C, links=L}) ->
                      Ctx};
         ok ->
             {true, RD, Ctx#ctx{doc={ok, Doc}}};
+        {ok, Details} when is_list(Details) ->
+            {true, add_fsm_details(RD, Details), Ctx#ctx{doc={ok, Doc}}};
         {ok, RObj} ->
             DocCtx = Ctx#ctx{doc={ok, RObj}},
             HasSiblings = (select_doc(DocCtx) == multiple_choices),
-            send_returnbody(RD, DocCtx, HasSiblings)
+            send_returnbody(RD, DocCtx, HasSiblings);
+        {ok, RObj, Details} when is_list(Details) ->
+            DocCtx = Ctx#ctx{doc={ok, RObj}},
+            HasSiblings = (select_doc(DocCtx) == multiple_choices),
+            send_returnbody(add_fsm_details(RD, Details), DocCtx, HasSiblings)
     end.
+
+add_fsm_details(RD, Details) ->
+    wrq:set_resp_header(
+      "X-Riak-FSM-Timings",
+      string:join(
+        [K ++ "=" ++ V || {K, V} <- 
+                lists:reverse(
+                  lists:foldl(
+                    fun({Stage, Val}, Acc) -> 
+                            [{atom_to_list(Stage),integer_to_list(Val)}|Acc] end,
+                    [], [{total, proplists:get_value(response_usecs, Details)}|
+                         proplists:get_value(stages, Details)]))], ", "), RD).
 
 %% Handle the no-sibling case. Just send the object.
 send_returnbody(RD, DocCtx, _HasSiblings = false) ->
