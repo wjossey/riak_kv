@@ -44,23 +44,32 @@ delete(ReqId,Bucket,Key,RW0,Timeout,Client) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     BucketProps = riak_core_bucket:get_bucket(Bucket, Ring),
     N = proplists:get_value(n_val,BucketProps),
+    put(iteration, ReqId),
     case riak_kv_util:expand_rw_value(rw, RW0, BucketProps, N) of
         error ->
             Client ! {ReqId, {error, {rw_val_violation, RW0}}};
         RW ->
             {ok,C} = riak:local_client(),
+            put(delete, true),
             case C:get(Bucket,Key,RW,Timeout) of
                 {ok, OrigObj} ->
                     RemainingTime = Timeout - (riak_core_util:moment() - RealStartTime),
                     OrigMD = hd([MD || {MD,_V} <- riak_object:get_contents(OrigObj)]),
                     NewObj = riak_object:update_metadata(OrigObj,
-                                                         dict:store(<<"X-Riak-Deleted">>, "true", OrigMD)),
+                                                         dict:store(<<"X-Riak-Deleted-Ref">>,
+                                                             term_to_binary(make_ref()),
+                                                             dict:store(<<"X-Riak-Deleted">>,
+                                                                 "true",
+                                                                 OrigMD))),
                     Reply = C:put(NewObj, RW, RW, RemainingTime),
+                    %io:format("delete response is ~p~n", [Reply]),
                     Client ! {ReqId, Reply},
                     case Reply of
-                        ok -> reap(Bucket,Key,RemainingTime);
+                        ok ->
+                            C:get(Bucket, Key, N, RemainingTime);
                         _ -> nop
                     end;
+                    %Client ! {ReqId, Reply};
                 {error, notfound} ->
                     Client ! {ReqId, {error, notfound}};
                 X ->
@@ -68,12 +77,15 @@ delete(ReqId,Bucket,Key,RW0,Timeout,Client) ->
             end                     
     end.
 
-reap(Bucket, Key, Timeout) ->
-    {ok,C} = riak:local_client(),
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    BucketProps = riak_core_bucket:get_bucket(Bucket, Ring),
-    N = proplists:get_value(n_val,BucketProps),
-    C:get(Bucket,Key,N,Timeout).
+%reap(Bucket, Key, Timeout) ->
+    %io:format("reap start~n"),
+    %{ok,C} = riak:local_client(),
+    %{ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    %BucketProps = riak_core_bucket:get_bucket(Bucket, Ring),
+    %N = proplists:get_value(n_val,BucketProps),
+    %Res = C:get(Bucket,Key,N,Timeout),
+    %io:format("reap done~n"),
+    %Res.
 
 
 %% ===================================================================

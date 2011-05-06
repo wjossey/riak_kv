@@ -247,6 +247,7 @@ handle_sync_event(_Event, _From, _StateName, StateData) ->
 
 %% @private
 handle_info(request_timeout, StateName, StateData) ->
+    %io:format("get FSM timeout ~p~n", [StateName]),
     ?MODULE:StateName(request_timeout, StateData);
 %% @private
 handle_info(_Info, _StateName, StateData) ->
@@ -343,6 +344,12 @@ maybe_finalize_delete(_StateData=#state{replied_notfound=NotFound,n=N,
                                         replied_r=RepliedR,
                                         preflist2=Sent,req_id=ReqId,
                                         bkey=BKey}) ->
+    %Uniq = lists:usort([RObj || {RObj,_Idx} <- RepliedR]),
+    %io:format("replied_r length ~p; ~p unique~n", [length(RepliedR), length(Uniq)]),
+    %io:format("replied_r ~p~n", [RepliedR]),
+    DelObj = riak_object:reconcile([RObj || {RObj,_Idx} <- RepliedR], false),
+    VClock = dict:fetch(<<"X-Riak-Deleted-Ref">>,
+        riak_object:get_metadata(DelObj)),
     IdealNodes = [{I,Node} || {{I,Node},primary} <- Sent],
     case length(IdealNodes) of
         N -> % this means we sent to a perfect preflist
@@ -351,7 +358,10 @@ maybe_finalize_delete(_StateData=#state{replied_notfound=NotFound,n=N,
                     case lists:all(fun(X) -> riak_kv_util:is_x_deleted(X) end,
                                    [O || {O,_I} <- RepliedR]) of
                         true -> % and every response was X-Deleted, go!
-                            riak_kv_vnode:del(IdealNodes, BKey, ReqId);
+                            Res = riak_kv_vnode:del(IdealNodes, BKey, VClock,
+                                ReqId + 2000000000),
+                            %io:format("vnode del ~p~n", [Res]),
+                            Res;
                         _ -> nop
                     end;
                 _ -> nop
@@ -365,6 +375,7 @@ maybe_do_read_repair(Sent,Final,RepliedR,NotFound,BKey,ReqId,StartTime,BucketPro
     case Targets of
         [] -> nop;
         _ ->
+            %io:format("read repair~n"),
             RepairPreflist = [{Idx, Node} || {{Idx,Node},_Type} <- Sent, 
                                             lists:member(Idx, Targets)],
             riak_kv_vnode:readrepair(RepairPreflist, BKey, FinalRObj, ReqId, 
@@ -404,6 +415,7 @@ respond(VResponses,AllowMult) ->
     Merged = merge(VResponses, AllowMult),
     case Merged of
         tombstone ->
+            %io:format("tombstone!~n"),
             Reply = {error,notfound};
         {error, notfound} ->
             Reply = Merged;
@@ -463,26 +475,32 @@ client_info([vnodes | Rest], StateData = #state{num_r = NumOks,
                    [{vnode_errors, Errors} | Oks]
            end,
     client_info(Rest, StateData, Info ++ Acc);
+client_info([vclock | Rest], #state{replied_r=[]} = StateData, Acc) ->
+    client_info(Rest, StateData, Acc);
+client_info([vclock | Rest], #state{replied_r=RepliedR} = StateData, Acc) ->
+    Obj = riak_object:reconcile([RObj || {RObj,_Idx} <- RepliedR], false),
+    client_info(Rest, StateData, [{vclock, riak_object:vclock(Obj)} | Acc]);
 client_info([Unknown | Rest], StateData, Acc) ->
     client_info(Rest, StateData, [{Unknown, unknown_detail} | Acc]).
 
 details() ->
     [timing,
-     vnodes].
+     vnodes,
+     vclock].
 
 -ifdef(TEST).
 -define(expect_msg(Exp,Timeout), 
         ?assertEqual(Exp, receive Exp -> Exp after Timeout -> timeout end)).
 
 get_fsm_test_() ->
-    {spawn, [{ setup,
+    {timeout, 30, {spawn, [{ setup,
                fun setup/0,
                fun cleanup/1,
                [
                 fun happy_path_case/0,
                 fun n_val_violation_case/0
                ]
-             }]}.
+           }]}}.
 
 setup() ->
     %% Set infinity timeout for the vnode inactivity timer so it does not

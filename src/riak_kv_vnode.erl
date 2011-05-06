@@ -30,7 +30,7 @@
 -export([start_vnode/1,
          get/3,
          mget/3,
-         del/3,
+         del/4,
          put/6,
          readrepair/6,
          list_keys/4,
@@ -105,9 +105,10 @@ mget(Preflist, BKeys, ReqId) ->
                                    Req,
                                    riak_kv_vnode_master).
 
-del(Preflist, BKey, ReqId) ->
+del(Preflist, BKey, VClock, ReqId) ->
     riak_core_vnode_master:command(Preflist,
                                    ?KV_DELETE_REQ{bkey=BKey,
+                                                  vclock=VClock,
                                                   req_id=ReqId},
                                    riak_kv_vnode_master).
 
@@ -168,12 +169,14 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            start_time=StartTime,
                            options=Options},
                Sender, State=#state{idx=Idx}) ->
+               io:format("~p Backend command put ~p ~n", [self(), ReqId]),
     riak_kv_mapred_cache:eject(BKey),
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
     do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
     {noreply, State};
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
+    io:format("~p Backend command get ~p ~n", [self(), ReqId]),
     do_get(Sender, BKey, ReqId, State);
 handle_command(?KV_MGET_REQ{bkeys=BKeys, req_id=ReqId, from=From}, _Sender, State) ->
     do_mget(From, BKeys, ReqId, State);
@@ -184,16 +187,48 @@ handle_command(?KV_LISTKEYS_REQ{bucket=Bucket, req_id=ReqId, caller=Caller}, _Se
                State=#state{mod=Mod, modstate=ModState, idx=Idx}) ->
     do_list_keys(Caller,ReqId,Bucket,Idx,Mod,ModState),
     {noreply, State};
-
-handle_command(?KV_DELETE_REQ{bkey=BKey, req_id=ReqId}, _Sender,
+handle_command(#riak_kv_delete_req_v1{bkey=BKey, req_id=ReqId}, _Sender,
                State=#state{mod=Mod, modstate=ModState,
                             idx=Idx}) ->
     riak_kv_mapred_cache:eject(BKey),
-    case Mod:delete(ModState, BKey) of
-        ok ->
-            {reply, {del, Idx, ReqId}, State};
-        {error, _Reason} ->
-            {reply, {fail, Idx, ReqId}, State}
+    Res = do_delete(BKey, Mod, ModState),
+    {reply, {Res, Idx, ReqId}, State};
+handle_command(?KV_DELETE_REQ{bkey=BKey, req_id=ReqId, vclock=VClock}, _Sender,
+               State=#state{mod=Mod, modstate=ModState,
+                            idx=Idx}) ->
+    io:format("~p Backend command delete ~p ~n", [self(), ReqId]),
+    case do_get_term(BKey, Mod, ModState) of
+        {ok, Obj} ->
+            {ObjVClock, Printable} = case dict:find(<<"X-Riak-Deleted-Ref">>,
+                    riak_object:get_metadata(Obj)) of
+                {ok, X} ->
+                    {X, binary_to_term(X)};
+                _ ->
+                    {undefined, undefined}
+            end,
+            io:format("~p Asked to delete ~p, got ~p ~p~n",
+                [self(), binary_to_term(VClock), Printable, ReqId]),
+            %% Is this an object an ancestor of the deleted object?
+            case VClock == ObjVClock of
+                true ->
+                    %io:format("Vclock: ~p ObjVclock ~p~n",
+                        %[binary_to_term(VClock), binary_to_term(ObjVClock)]),
+                    %io:format("is a descendant ~p~n", [VClock == ObjVClock]),
+                    %io:format("object ~p~n",
+                        %[binary_to_term(riak_object:get_value(Obj))]),
+                    %% Object is the same or older, we can delete
+                    Res = do_delete(BKey, Mod, ModState),
+                    %io:format("~p Delete result is ~p ~p~n", [self(), Res, ReqId]),
+                    {reply, {Res, Idx, ReqId}, State};
+                false ->
+                    io:format("~p Delete ref did not match ~p ~p ~p~n",
+                        [self(), binary_to_term(VClock), Printable, ReqId]),
+                    %io:format("is NOT a descendant~n"),
+                    {reply, {changed, Idx, ReqId}, State}
+            end;
+        _ ->
+            io:format("~p Object not present ~p~n", [self(), ReqId]),
+            {reply, {notfound, Idx, ReqId}, State}
     end;
 handle_command(?KV_VCLOCK_REQ{bkeys=BKeys}, _Sender, State) ->
     {reply, do_get_vclocks(BKeys, State), State};
@@ -232,6 +267,7 @@ handle_command({mapexec_reply, JobId, Result}, _Sender, #state{mrjobs=Jobs}=Stat
 handle_handoff_command(Req=?FOLD_REQ{}, Sender, State) ->
     handle_command(Req, Sender, State);
 handle_handoff_command(Req={backend_callback, _Ref, _Msg}, Sender, State) ->
+    io:format("~p Backend command ~p ~n", [self(), element(1, Req)]),
     handle_command(Req, Sender, State);
 handle_handoff_command(_Req, _Sender, State) -> {forward, State}.
 
@@ -345,7 +381,7 @@ perform_put({false, _Obj}, #state{idx=Idx}, #putargs{returnbody=false,reqid=ReqI
 perform_put({true, Obj}, #state{idx=Idx,mod=Mod,modstate=ModState},
             #putargs{returnbody=RB, bkey=BKey, reqid=ReqID}) ->
     Val = term_to_binary(Obj),
-    case Mod:put(ModState, BKey, Val) of
+        case Mod:put(ModState, BKey, Val) of
         ok ->
             case RB of
                 true -> {dw, Idx, Obj, ReqID};
@@ -392,6 +428,8 @@ syntactic_put_merge(Mod, ModState, BKey, Obj1, ReqId, StartTime) ->
             Obj0 = binary_to_term(Val0),
             ResObj = riak_object:syntactic_merge(
                        Obj0,Obj1,term_to_binary(ReqId), StartTime), 
+            io:format("VClock compare ~p ~n ~p ~n ~p ~n", [riak_object:vclock(Obj0),
+                    riak_object:vclock(Obj1), riak_object:vclock(ResObj)]),
             case riak_object:vclock(ResObj) =:= riak_object:vclock(Obj0) of
                 true -> {oldobj, ResObj};
                 false -> {newobj, ResObj}
@@ -473,6 +511,15 @@ do_list_keys(Caller,ReqId,Bucket,Idx,Mod,ModState) ->
             Caller ! {ReqId, {kl, Idx, Remainder}}
     end,
     Caller ! {ReqId, Idx, done}.
+
+%% @private
+do_delete(BKey, Mod, ModState) ->
+    case Mod:delete(ModState, BKey) of
+        ok ->
+            del;
+        {error, _Reason} ->
+            fail
+    end.
 
 %% @private
 process_keys(Caller, ReqId, Idx, '_', {Bucket, _K}, Acc) ->

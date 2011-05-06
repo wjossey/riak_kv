@@ -231,7 +231,20 @@ get(Bucket, Key) ->
 %%      have responded with a value or error.
 get(Bucket, Key, Options) when is_list(Options) ->
     Me = self(),
-    ReqId = mk_reqid(),
+    ReqIdIn = case get(iteration) of
+        undefined ->
+            mk_reqid();
+        N ->
+            100+N
+    end,
+
+    case get(delete) of
+        true ->
+            ReqId = ReqIdIn + 6000000000;
+        _ ->
+            ReqId = ReqIdIn
+    end,
+
     riak_kv_get_fsm_sup:start_get_fsm(Node, [{raw, ReqId, Me}, Bucket, Key, Options]),
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
     Timeout = recv_timeout(Options),
@@ -292,7 +305,19 @@ put(RObj) -> THIS:put(RObj, []).
 put(RObj, Options) when is_list(Options) ->
     UpdObj = riak_object:increment_vclock(RObj, ClientId),
     Me = self(),
-    ReqId = mk_reqid(),
+    ReqIdIn = case get(iteration) of
+        undefined ->
+            mk_reqid();
+        N ->
+            200+N
+    end,
+
+    case get(delete) of
+        true ->
+            ReqId = ReqIdIn + 8000000000;
+        _ ->
+            ReqId = ReqIdIn
+    end,
     riak_kv_put_fsm_sup:start_put_fsm(Node, [{raw, ReqId, Me}, UpdObj, Options]),
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
     Timeout = recv_timeout(Options),
@@ -378,7 +403,12 @@ delete(Bucket,Key,RW) -> delete(Bucket,Key,RW,?DEFAULT_TIMEOUT).
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.
 delete(Bucket,Key,RW,Timeout) ->
     Me = self(),
-    ReqId = mk_reqid(),
+    case get(iteration) of
+        undefined ->
+            ReqId = mk_reqid();
+        N ->
+            ReqId = N
+    end,
     riak_kv_delete_sup:start_delete(Node, [ReqId, Bucket, Key, RW, Timeout, Me]),
     wait_for_reqid(ReqId, Timeout).
 

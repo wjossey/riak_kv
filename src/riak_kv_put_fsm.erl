@@ -621,7 +621,7 @@ client_info([timing | Rest], StateData = #state{timing = Timing}, Info) ->
                                   {stages, Stages} | Info]).
 
 default_details() ->
-    [timing].
+    [timing, vclock].
 
 
 %% Add timing information to the state
