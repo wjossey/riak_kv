@@ -41,7 +41,7 @@
                   {basic_quorum, boolean()} |  %% Whether to use basic quorum (return early 
                                                %% in some failure cases.
                   {notfound_ok, boolean()}  |  %% Count notfound reponses as successful.
-                  {timeout, timeout()}.        %% Timeout for vnode responses
+                  {timeout, timeout()} |       %% Timeout for vnode responses
                   {details, details()} |       %% Return extra details as a 3rd element
                   {details, true} |
                   details.
@@ -52,14 +52,6 @@
 -export_type([options/0, option/0]).
 
 -record(state, {from :: {raw, riak_client:req_id(), pid()},
-                options=[] :: options(),
-                n :: riak_client:n_val(),
-                r :: riak_client:quorum_val_pos(),
-                fail_threshold :: non_neg_integer(),
-                allowmult :: boolean(),
-                notfound_ok :: boolean(),
-
--record(state, {from :: {raw, req_id(), pid()},
                 options=[] :: options(),
                 n :: riak_client:n_val(),
                 preflist2 :: riak_core_apl:preflist2(),
