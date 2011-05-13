@@ -125,17 +125,17 @@ expand_value(Type, default, BucketProps) ->
 expand_value(_Type, Value, _BucketProps) ->
     Value.
 
--spec expand_rw_value(riak_client:quorum_type(),
-                      riak_client:symbolic_rw_val(),
+-spec expand_rw_value(riak_core:quorum_type(),
+                      riak_core:symbolic_rw_val(),
                       riak_core_bucket:bucket_props(),
-                      riak_client:n_val()) -> riak_client:numeric_rw_val() | error.
+                      riak_core:n_val()) -> riak_core:integer_rw_val() | error.
 expand_rw_value(Type, default, BucketProps, N) ->
     normalize_rw_value(get_bucket_option(Type, BucketProps), N);
 expand_rw_value(_Type, Val, _BucketProps, N) ->
     normalize_rw_value(Val, N).
 
--spec normalize_rw_value(riak_client:quorum_val()|binary(), riak_client:n_val()) ->
-                                riak_client:numeric_rw_val() | error.
+-spec normalize_rw_value(riak_core:quorum_val()|binary(), riak_core:n_val()) ->
+                                riak_core:integer_rw_val() | error.
 normalize_rw_value(RW, _N) when is_integer(RW) -> RW;
 normalize_rw_value(RW, N) when is_binary(RW) ->
     try

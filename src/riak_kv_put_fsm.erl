@@ -47,9 +47,9 @@
                   false |
                   [detail_info()].
 
--type option() :: {pw, riak_client:pw_val()} | %% Min number of primary (owner) vnodes participating
-                  {w,  riak_client:w_val()}  | %% Minimum number of vnodes receiving write
-                  {dw, riak_client:dw_val()} | %% Minimum number of vnodes completing write
+-type option() :: {pw, riak_core:pw_val()} | %% Min number of primary (owner) vnodes participating
+                  {w,  riak_core:w_val()}  | %% Minimum number of vnodes receiving write
+                  {dw, riak_core:dw_val()} | %% Minimum number of vnodes completing write
                   {timeout, timeout()} |
                   {details, detail()}.      %% Request additional details about request
                                             %% added as extra element at the end of result tuplezd 
@@ -60,9 +60,9 @@
 -record(state, {from :: {raw, integer(), pid()},
                 robj :: riak_object:riak_object(),
                 options = [] :: options(),
-                n :: riak_client:n_val(),
-                w :: riak_client:quorum_val_pos(),
-                dw :: riak_client:quorum_val_non_neg(),
+                n :: riak_core:n_val(),
+                w :: riak_core:pos_quorum_val(),
+                dw :: riak_core:non_neg_quorum_val(),
                 preflist2 :: riak_core_apl:preflist2(),
                 bkey :: riak_object:bkey(),
                 req_id :: riak_client:req_id(),

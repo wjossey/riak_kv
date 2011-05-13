@@ -36,8 +36,8 @@
                   vnodes.
 -type details() :: [detail()].
 
--type option() :: {r, pos_integer()} |         %% Minimum number of successful responses
-                  {pr, non_neg_integer()} |    %% Minimum number of primary vnodes participating
+-type option() :: {r, riak_core:r_val()} |         %% Minimum number of successful responses
+                  {pr, riak_core:pr_val()} |    %% Minimum number of primary vnodes participating
                   {basic_quorum, boolean()} |  %% Whether to use basic quorum (return early 
                                                %% in some failure cases.
                   {notfound_ok, boolean()}  |  %% Count notfound reponses as successful.
@@ -53,7 +53,7 @@
 
 -record(state, {from :: {raw, riak_client:req_id(), pid()},
                 options=[] :: options(),
-                n :: riak_client:n_val(),
+                n :: riak_core:n_val(),
                 preflist2 :: riak_core_apl:preflist2(),
                 req_id :: riak_client:req_id(),
                 starttime :: pos_integer(),
@@ -76,12 +76,12 @@
 
 %% In place only for backwards compatibility
 -spec start(riak_client:req_id(), riak_object:bucket(), riak_object:key(),
-            riak_client:r_val(), timeout(), term()) -> {ok, pid()}.
+            riak_core:r_val(), timeout(), term()) -> {ok, pid()}.
 start(ReqId,Bucket,Key,R,Timeout,From) ->
     start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 
 -spec start_link(riak_client:req_id(), riak_object:bucket(), riak_object:key(),
-                 riak_client:r_val(), timeout(), term()) -> {ok, pid()}.
+                 riak_core:r_val(), timeout(), term()) -> {ok, pid()}.
 start_link(ReqId,Bucket,Key,R,Timeout,From) ->
     start_link({raw, ReqId, From}, Bucket, Key, [{r, R}, {timeout, Timeout}]).
 

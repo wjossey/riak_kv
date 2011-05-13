@@ -52,40 +52,11 @@
 
 -export_type([riak_client/0, 
               client_id/0, 
-              req_id/0,
-              quorum_type/0,
-              symbolic_rw_val/0,
-              numeric_rw_val/0,
-              n_val/0, 
-              r_val/0,
-              w_val/0,
-              rw_val/0,
-              dw_val/0,
-              pw_val/0,
-              pr_val/0,
-              quorum_val_pos/0,
-              quorum_val_non_neg/0,
-              quorum_val/0]).
+              req_id/0]).
 
 -type riak_client() :: {riak_client, node(), client_id()}.
 -type client_id() :: <<_:32>>.
 -type req_id() :: non_neg_integer().
--type quorum_type() :: r | w | rw | dw | pw | pr.
--type symbolic_rw_val() :: one | quorum | all | default.
--type numeric_rw_val_pos() :: pos_integer().
--type numeric_rw_val_non_neg() :: non_neg_integer().
--type numeric_rw_val() :: numeric_rw_val_pos() | numeric_rw_val_non_neg().
--type n_val()  :: numeric_rw_val_pos().
--type quorum_val_t(IntType) :: symbolic_rw_val() | IntType.
--type quorum_val_pos() :: quorum_val_t(numeric_rw_val_pos()).
--type quorum_val_non_neg() :: quorum_val_t(numeric_rw_val_non_neg()).
--type r_val()  :: quorum_val_non_neg().
--type w_val()  :: quorum_val_non_neg().
--type rw_val() :: quorum_val_pos().
--type dw_val() :: quorum_val_non_neg().
--type pw_val() :: quorum_val_non_neg().
--type pr_val() :: quorum_val_non_neg().
--type quorum_val() :: quorum_val_pos() | quorum_val_non_neg().
 
 %% @spec mapred(Inputs :: riak_kv_mapred_term:mapred_inputs(),
 %%              Query :: [riak_kv_mapred_query:mapred_queryterm()]) ->

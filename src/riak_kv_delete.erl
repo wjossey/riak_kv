@@ -38,9 +38,9 @@ start_link(ReqId, Bucket, Key, RW, Timeout, Client) ->
 %%      see riak_client:delete/3 for expected gen_server replies to Client.
 -spec delete(riak_client:req_id(), riak_object:bucket(),
              riak_object:key(),
-             riak_client:r_val(),pos_integer(), pid()) ->
+             riak_core:r_val(),pos_integer(), pid()) ->
                     {riak_client:req_id(), ok} |
-                    {riak_client:req_id(), {error, {rw_val_violation, riak_client:r_val()}}} |
+                    {riak_client:req_id(), {error, {rw_val_violation, riak_core:r_val()}}} |
                     {riak_client:req_id(), {error, notfound}}.
 delete(ReqId,Bucket,Key,RW0,Timeout,Client) ->           
     RealStartTime = riak_core_util:moment(),
