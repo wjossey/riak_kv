@@ -95,7 +95,7 @@ stop({Ref, _}) ->
 
 
 get({Ref, _}, BKey) ->
-    Key = term_to_binary(BKey),
+    Key = bk_to_caskkey(BKey),
     case bitcask:get(Ref, Key) of
         {ok, Value} ->
             {ok, Value};
@@ -106,16 +106,16 @@ get({Ref, _}, BKey) ->
     end.
 
 put({Ref, _}, BKey, Val) ->
-    Key = term_to_binary(BKey),
+    Key = bk_to_caskkey(BKey),
     ok =  bitcask:put(Ref, Key, Val).
 
 delete({Ref, _}, BKey) ->
-    ok = bitcask:delete(Ref, term_to_binary(BKey)).
+    ok = bitcask:delete(Ref, bk_to_caskkey(BKey)).
 
 list({Ref, _}) ->
     case bitcask:list_keys(Ref) of
         KeyList when is_list(KeyList) ->
-            [binary_to_term(K) || K <- KeyList];
+            [caskkey_to_bk(K) || K <- KeyList];
         Other ->
             Other
     end.
@@ -123,7 +123,7 @@ list({Ref, _}) ->
 list_bucket({Ref, _}, {filter, Bucket, Fun}) ->
     bitcask:fold_keys(Ref,
         fun(#bitcask_entry{key=BK},Acc) ->
-                {B,K} = binary_to_term(BK),
+                {B,K} = caskkey_to_bk(BK),
 		case (B =:= Bucket) andalso Fun(K) of
 		    true ->
 			[K|Acc];
@@ -134,7 +134,7 @@ list_bucket({Ref, _}, {filter, Bucket, Fun}) ->
 list_bucket({Ref, _}, '_') ->
     bitcask:fold_keys(Ref,
         fun(#bitcask_entry{key=BK},Acc) ->
-                {B,_K} = binary_to_term(BK),
+                {B,_K} = caskkey_to_bk(BK),
                 case lists:member(B,Acc) of
                     true -> Acc;
                     false -> [B|Acc]
@@ -143,7 +143,7 @@ list_bucket({Ref, _}, '_') ->
 list_bucket({Ref, _}, Bucket) ->
     bitcask:fold_keys(Ref,
         fun(#bitcask_entry{key=BK},Acc) ->
-                {B,K} = binary_to_term(BK),
+                {B,K} = caskkey_to_bk(BK),
                 case B of
                     Bucket -> [K|Acc];
                     _ -> Acc
@@ -152,17 +152,17 @@ list_bucket({Ref, _}, Bucket) ->
 
 fold({Ref, _}, Fun0, Acc0) ->
     %% When folding across the bitcask, the bucket/key tuple must
-    %% be decoded. The intermediate binary_to_term call handles this
+    %% be decoded. The intermediate caskkey_to_bk call handles this
     %% and yields the expected fun({B, K}, Value, Acc)
     bitcask:fold(Ref,
                  fun(K, V, Acc) ->
-                         Fun0(binary_to_term(K), V, Acc)
+                         Fun0(caskkey_to_bk(K), V, Acc)
                  end,
                  Acc0).
 
 fold_keys({Ref, _}, Fun, Acc) ->
     F = fun(#bitcask_entry{key=K}, Acc1) ->
-                Fun(binary_to_term(K), Acc1) end,
+                Fun(caskkey_to_bk(K), Acc1) end,
     bitcask:fold_keys(Ref, F, Acc).
 
 fold_bucket_keys(ModState, _Bucket, Fun, Acc) ->
@@ -215,6 +215,24 @@ key_counts() ->
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
+
+%% @private
+%% Convert a {Bucket, Key} Riak keypair into a single binary key for bitcask
+bk_to_caskkey({Bucket,Key}) when is_binary(Bucket), is_binary(Key),
+                               (bit_size(Bucket) < 65536) ->
+    Bsz = bit_size(Bucket),
+    %% prepend a single "formatversion" byte to differentiate from term format
+    <<1:8, Bsz:16, Bucket/binary, Key/binary>>.
+
+%% @private
+%% Convert a bitcask internal key into a Riak {Bucket, Key} keypair
+caskkey_to_bk(<<1:8,Bsz:16/integer,RestCK/binary>>) ->
+    %% new form, as created by bk_to_caskkey
+    <<Bucket:Bsz/bits,Key/binary>> = RestCK,
+    {Bucket,Key};
+caskkey_to_bk(BK= <<131:8,_/binary>>) ->
+    %% old form, created by term_to_binary
+    binary_to_term(BK).
 
 %% @private
 %% Invoke bitcask:status/1 for a given directory
