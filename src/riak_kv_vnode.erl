@@ -268,6 +268,13 @@ terminate(_Reason, #state{mod=Mod, modstate=ModState}) ->
 
 %% old vnode helper functions
 
+should_warn(What, Val)  ->
+    case application:get_env(riak_kv, What) of
+        {ok, Warn} when is_integer(Val), Val >= Warn ->
+            true;
+        _ ->
+            false
+    end.
 
 %store_call(State=#state{mod=Mod, modstate=ModState}, Msg) ->
 %    Mod:call(ModState, Msg).
@@ -327,7 +334,16 @@ perform_put({false, _Obj}, #state{idx=Idx}, #putargs{returnbody=false,reqid=ReqI
     {dw, Idx, ReqId};
 perform_put({true, Obj}, #state{idx=Idx,mod=Mod,modstate=ModState},
             #putargs{returnbody=RB, bkey=BKey, reqid=ReqID}) ->
+    Sibs = length(riak_object:get_contents(Obj)),
     Val = term_to_binary(Obj),
+    Size = size(Val),
+    case should_warn(warn_sibs, Sibs) orelse should_warn(warn_size, Size) of
+        true ->
+            error_logger:info_msg("Put ~p wrote object with ~p siblings, ~p bytes.\n",
+                                  [BKey, Sibs, Size]);
+        _ ->
+            ok
+    end,
     case Mod:put(ModState, BKey, Val) of
         ok ->
             case RB of
@@ -373,6 +389,16 @@ syntactic_put_merge(Mod, ModState, BKey, Obj1, ReqId, StartTime) ->
         {error, notfound} -> {newobj, Obj1};
         {ok, Val0} ->
             Obj0 = binary_to_term(Val0),
+            Sibs = length(riak_object:get_contents(Obj0)),
+            Size = size(Val0),
+            case should_warn(warn_sibs, Sibs) orelse should_warn(warn_size, Size) of
+                true ->
+                    error_logger:info_msg("Put ~p retrieved object with ~p siblings, ~p bytes.\n",
+                                          [BKey, Sibs, Size]);
+                _ ->
+                    ok
+            end,
+
             ResObj = riak_object:syntactic_merge(
                        Obj0,Obj1,term_to_binary(ReqId),StartTime),
             case riak_object:vclock(ResObj) =:= riak_object:vclock(Obj0) of
@@ -405,7 +431,18 @@ do_mget({fsm, Sender}, BKeys, ReqId, State=#state{idx=Idx, mod=Mod, modstate=Mod
 do_get_term(BKey, Mod, ModState) ->
     case do_get_binary(BKey, Mod, ModState) of
         {ok, Bin} ->
-            {ok, binary_to_term(Bin)};
+            Obj = binary_to_term(Bin),
+            Sibs = length(riak_object:get_contents(Obj)),
+            Size = size(Bin),
+            case should_warn(warn_sibs, Sibs) orelse should_warn(warn_size, Size) of
+                true ->
+                    error_logger:info_msg("Get ~p retrieved object with ~p siblings, ~p bytes\n",
+                                          [BKey, Sibs, Size]);
+                _ ->
+                    ok
+            end,
+
+            {ok, Obj};
         Err ->
             Err
     end.
@@ -618,4 +655,5 @@ flush_msgs() ->
             ok
     end.
 
+           
 -endif.
