@@ -33,7 +33,7 @@ run() ->
     run("/tmp/riak").
 
 run(LogDir) ->
-    {ok, _Pid} = yamlog:start(),
+    {ok, _Pid} = start(),
     trace_fsms(),
     log_fsms(filename:join(LogDir, "fsm_trace.log")),
     log_fsm_stats(filename:join(LogDir, "fsm_stats.log")),
