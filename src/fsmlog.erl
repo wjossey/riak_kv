@@ -35,9 +35,9 @@ run() ->
 run(LogDir) ->
     {ok, _Pid} = start(),
     trace_fsms(),
-    log_fsms(filename:join(LogDir, "fsm_trace.log")),
+    log_fsms(filename:join(LogDir, "fsm_trace.log.gz")),
     log_fsm_stats(filename:join(LogDir, "fsm_stats.log")),
-    log_vnodes(filename:join(LogDir, "vnodes.log")),
+    log_vnodes(filename:join(LogDir, "vnodes.log.gz")),
     ok.
     
 start() ->
@@ -79,9 +79,6 @@ init([]) ->
     {0, TimeDiff} = calendar:time_difference(calendar:local_time(), calendar:universal_time()),
     TimeDiffSecs = calendar:time_to_seconds(TimeDiff),
     Epoch = calendar:datetime_to_gregorian_seconds({{1970,1,1},{0,0,0}}) - TimeDiffSecs,
-
-    %% Epoch = calendar:datetime_to_gregorian_seconds(
-    %%           calendar:local_time_to_universal_time({{1970,1,1},{0,0,0}})),
     {ok, #state{local_epoch = Epoch}}.
 
 handle_call({trace_fsms, Interval}, _From, State) ->
@@ -98,7 +95,7 @@ handle_call(report_fsms, _From, State = #state{get_fsm_5min = Get5,
     {reply, Reply, State};
 handle_call({log_fsms, Filename}, _From, State = #state{fsm_fh = OldFh}) ->
     catch file:close(OldFh),
-    case file:open(Filename, [write, raw, binary, delayed_write]) of
+    case open(Filename, [write, raw, binary, delayed_write]) of
         {ok, Fh} ->
             {reply, ok, State#state{fsm_fh = Fh}};
         ER ->
@@ -109,7 +106,7 @@ handle_call({log_fsms, Filename}, _From, State = #state{fsm_fh = OldFh}) ->
 handle_call({log_vnodes, Filename, Interval}, _From, State = #state{vnode_fh = OldFh}) ->
     State1 = schedule_log_vnodes(State#state{vnode_interval = Interval}),
     catch file:close(OldFh),
-    case file:open(Filename, [write, raw, binary]) of
+    case open(Filename, [write, raw, binary]) of
         {ok, Fh} ->
             {reply, ok, State1#state{vnode_fh = Fh}};
         ER ->
@@ -119,7 +116,7 @@ handle_call({log_vnodes, Filename, Interval}, _From, State = #state{vnode_fh = O
     end;
 handle_call({log_fsm_stats, Filename}, _From, State = #state{fsm_stats_fh = OldFh}) ->
     catch file:close(OldFh),
-    case file:open(Filename, [write, raw, binary]) of
+    case open(Filename, [write, raw, binary]) of
         {ok, Fh} ->
             {reply, ok, State#state{fsm_stats_fh = Fh}};
         ER ->
@@ -294,6 +291,13 @@ maybe_cancel_timer(undefined) ->
 maybe_cancel_timer(Tref) ->
     erlang:cancel_timer(Tref).
 
+open(Filename, Options) ->
+    case filename:extension(Filename) of
+        ".gz" ->
+            file:open(Filename, [compressed | Options]);
+        _ ->
+            file:open(Filename, Options)
+    end.
                
 %% -module(logfsms).
 
