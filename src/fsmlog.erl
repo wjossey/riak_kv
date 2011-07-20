@@ -4,7 +4,9 @@
 %% API
 -export([run/0, run/1]).
 -export([start_link/0, start/0, stop/0]).
--export([trace_fsms/0, report_fsms/0, log_fsms/1, log_vnodes/1, log_fsm_stats/1,
+-export([trace_fsms/0, trace_fsms/1,
+         trace_bitcask/0, trace_bitcask/1,
+         report_fsms/0, log_trace/1, log_vnodes/1, log_stats/1,
          timestamp/0]).
 
 %% gen_server callbacks
@@ -12,16 +14,20 @@
          terminate/2, code_change/3]).
 
 -record(state, {local_epoch, %% Local gregorian seconds at 1/1/1970
-                fsm_fh,
-                fsm_stats_fh,
+                trace_fh,
+                stats_fh,
                 vnode_fh,
                 fsms_tref,
                 fsms_interval,
+                bc_tref,
+                bc_interval,
                 vnode_tref,
                 vnode_interval,
                 vnode_idxs = [], % { Pid, VnodeIdx}
                 get_fsm_5min = new_fsm_hist(),
-                put_fsm_5min = new_fsm_hist()
+                put_fsm_5min = new_fsm_hist(),
+                get_bc_5min = new_fsm_hist(),
+                put_bc_5min = new_fsm_hist()
                }).
 
 
@@ -35,8 +41,9 @@ run() ->
 run(LogDir) ->
     {ok, _Pid} = start(),
     trace_fsms(),
-    log_fsms(filename:join(LogDir, "fsm_trace.log.gz")),
-    log_fsm_stats(filename:join(LogDir, "fsm_stats.log")),
+    trace_bitcask(),
+    log_trace(filename:join(LogDir, "trace.log.gz")),
+    log_stats(filename:join(LogDir, "stats.log")),
     log_vnodes(filename:join(LogDir, "vnodes.log.gz")),
     ok.
     
@@ -55,14 +62,20 @@ trace_fsms() ->
 trace_fsms(Interval) ->
     gen_server:call(?MODULE, {trace_fsms, Interval}).
 
+trace_bitcask() ->
+    trace_bitcask(timer:minutes(5)).
+
+trace_bitcask(Interval) ->
+    gen_server:call(?MODULE, {trace_bitcask, Interval}).
+
 report_fsms() ->
     gen_server:call(?MODULE, report_fsms).
 
-log_fsms(Filename) ->
-    gen_server:call(?MODULE, {log_fsms, Filename}).
+log_trace(Filename) ->
+    gen_server:call(?MODULE, {log_trace, Filename}).
 
-log_fsm_stats(Filename) ->
-    gen_server:call(?MODULE, {log_fsm_stats, Filename}).
+log_stats(Filename) ->
+    gen_server:call(?MODULE, {log_stats, Filename}).
 
 log_vnodes(Filename) ->
     log_vnodes(Filename, timer:seconds(5)).
@@ -76,6 +89,9 @@ log_vnodes(Filename, Interval) ->
 %%%===================================================================
 
 init([]) ->
+    dbg:stop_clear(),
+    dbg:tracer(process, {fun stat_trace/2, gb_trees:empty()}),
+    dbg:p(all, call),
     {0, TimeDiff} = calendar:time_difference(calendar:local_time(), calendar:universal_time()),
     TimeDiffSecs = calendar:time_to_seconds(TimeDiff),
     Epoch = calendar:datetime_to_gregorian_seconds({{1970,1,1},{0,0,0}}) - TimeDiffSecs,
@@ -83,25 +99,27 @@ init([]) ->
 
 handle_call({trace_fsms, Interval}, _From, State) ->
     State1 = schedule_reset_fsm_hists(State#state{fsms_interval = Interval}),
-    dbg:stop_clear(),
-    dbg:tracer(process, {fun stat_trace/2, []}),
-    dbg:p(all, call),
     dbg:tpl(riak_kv_stat, update, 3, []),
+    {reply, ok, State1};
+handle_call({trace_bitcask, Interval}, _From, State) ->
+    State1 = schedule_reset_bc_hists(State#state{bc_interval = Interval}),
+    dbg:tpl(bitcask, get, 2, [{'_', [], [{return_trace}]}]),
+    dbg:tpl(bitcask, put, 3, [{'_', [], [{return_trace}]}]),
     {reply, ok, State1};
 handle_call(report_fsms, _From, State = #state{get_fsm_5min = Get5,
                                                put_fsm_5min = Put5}) ->
     Reply = [hist_summary(get5, Get5),
              hist_summary(put5, Put5)],
     {reply, Reply, State};
-handle_call({log_fsms, Filename}, _From, State = #state{fsm_fh = OldFh}) ->
+handle_call({log_trace, Filename}, _From, State = #state{trace_fh = OldFh}) ->
     catch file:close(OldFh),
     case open(Filename, [write, raw, binary, delayed_write]) of
         {ok, Fh} ->
-            {reply, ok, State#state{fsm_fh = Fh}};
+            {reply, ok, State#state{trace_fh = Fh}};
         ER ->
             error_logger:error_msg("~p: Could not open FSM trace log ~p: ~p",
                                    [?MODULE, Filename, ER]),
-            {reply, ER, State#state{fsm_fh = undefined}}
+            {reply, ER, State#state{trace_fh = undefined}}
     end;
 handle_call({log_vnodes, Filename, Interval}, _From, State = #state{vnode_fh = OldFh}) ->
     State1 = schedule_log_vnodes(State#state{vnode_interval = Interval}),
@@ -114,15 +132,15 @@ handle_call({log_vnodes, Filename, Interval}, _From, State = #state{vnode_fh = O
                                    [?MODULE, Filename, ER]),
             {reply, ER, State1#state{vnode_fh = undefined}}
     end;
-handle_call({log_fsm_stats, Filename}, _From, State = #state{fsm_stats_fh = OldFh}) ->
+handle_call({log_stats, Filename}, _From, State = #state{stats_fh = OldFh}) ->
     catch file:close(OldFh),
     case open(Filename, [write, raw, binary]) of
         {ok, Fh} ->
-            {reply, ok, State#state{fsm_stats_fh = Fh}};
+            {reply, ok, State#state{stats_fh = Fh}};
         ER ->
             error_logger:error_msg("~p: Could not open FSM stats log ~p: ~p",
                                    [?MODULE, Filename, ER]),
-            {reply, ER, State#state{fsm_stats_fh = undefined}}
+            {reply, ER, State#state{stats_fh = undefined}}
     end;
 handle_call(stop, _From, State) ->
     dbg:stop_clear(),
@@ -139,15 +157,30 @@ handle_info({put_fsm_usecs, Moment, Usecs}, State = #state{put_fsm_5min = FiveMi
     State1 = trace_log_fsm(put_fsm, Moment, Usecs, State),
     {noreply, State1#state{put_fsm_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
 
-handle_info(reset_fsm_hists, State = #state{fsm_stats_fh = Fh,
+handle_info({{bitcask, get}, Timestamp, Usecs}, State = #state{get_bc_5min = FiveMinHist}) ->
+    State1 = trace_log(get_bc, Timestamp, Usecs, State),
+    {noreply, State1#state{get_bc_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
+handle_info({{bitcask, put}, Timestamp, Usecs}, State = #state{put_bc_5min = FiveMinHist}) ->
+    State1 = trace_log(put_bc, Timestamp, Usecs, State),
+    {noreply, State1#state{put_bc_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
+handle_info(reset_fsm_hists, State = #state{stats_fh = Fh,
                                             get_fsm_5min = Get5,
                                             put_fsm_5min = Put5}) ->
     State1 = schedule_reset_fsm_hists(State),
     TS = timestamp(),
-    log_vnode_stats(TS, get, Get5, Fh),
-    log_vnode_stats(TS, put, Put5, Fh),
+    log_hist_stats(TS, get, Get5, Fh),
+    log_hist_stats(TS, put, Put5, Fh),
     {noreply, State1#state{get_fsm_5min = new_fsm_hist(),
                           put_fsm_5min = new_fsm_hist()}};
+handle_info(reset_bc_hists, State = #state{stats_fh = Fh,
+                                           get_bc_5min = Get5,
+                                           put_bc_5min = Put5}) ->
+    State1 = schedule_reset_bc_hists(State),
+    TS = timestamp(),
+    log_hist_stats(TS, bcget, Get5, Fh),
+    log_hist_stats(TS, bcput, Put5, Fh),
+    {noreply, State1#state{get_fsm_5min = new_fsm_hist(),
+                           put_fsm_5min = new_fsm_hist()}};
 
 handle_info(log_vnodes, State = #state{vnode_fh = Fh}) ->
     State1 = schedule_log_vnodes(State),
@@ -189,7 +222,7 @@ hist_summary(What, Hist) ->
         [{What, Pctl, maybe_trunc(basho_stats_histogram:quantile(Pctl, Hist))} || 
             Pctl <- [0.500, 0.950, 0.990, 0.999]].
 
-log_vnode_stats(TS, What, Hist, Fh) ->
+log_hist_stats(TS, What, Hist, Fh) ->
     {Min, Mean, Max, _, _} = basho_stats_histogram:summary_stats(Hist),
     Data = [TS, 
             What, 
@@ -215,19 +248,24 @@ maybe_trunc(Val) ->
             Val
     end.
 
-trace_log_fsm(_Op, _Moment, _Usecs, State = #state{fsm_fh = undefined}) ->
+trace_log_fsm(_Op, _Moment, _Usecs, State = #state{trace_fh = undefined}) ->
     State;
-trace_log_fsm(Op, Moment, Usecs, State = #state{fsm_fh = Fh, local_epoch = Epoch}) ->
+trace_log_fsm(Op, Moment, Usecs, State = #state{local_epoch = Epoch}) ->
     TS = Moment - Epoch,
+    trace_log(Op, TS, Usecs, State).
+
+trace_log(_Op, _TS, _Usecs, State = #state{trace_fh = undefined}) ->
+    State;
+trace_log(Op, TS, Usecs, State = #state{trace_fh = Fh}) ->
     Entry = io_lib:format("~b,~p,~b\n", [TS, Op, Usecs]),
     case file:write(Fh, Entry) of
         ok ->
             State;
         ER ->
-            error_logger:error_msg("Could not write entry - ~p.  Disabling FSM log to disk.\n",
+            error_logger:error_msg("Could not write entry - ~p.  Disabling trace log to disk.\n",
                                    [ER]),
             catch file:close(Fh),
-            State#state{fsm_fh = undefined}
+            State#state{trace_fh = undefined}
     end.
 
 make_vnode_entry(Pid, {Entries, State}) ->
@@ -261,13 +299,22 @@ get_vnode_pids() ->
     [Pid || {undefined, Pid, worker, dynamic} <- supervisor:which_children(riak_core_vnode_sup)].
 
 stat_trace({trace, _Pid, call, {_Mod, _Fun, [{get_fsm_time, Usecs}, Moment, _State]}}, Acc) ->
-%    io:format(user, "get FSM: ~p\n", [Usecs]),
     ?MODULE ! {get_fsm_usecs, Moment, Usecs},
     Acc;
 stat_trace({trace, _Pid, call, {_Mod, _Fun, [{put_fsm_time, Usecs}, Moment, _State]}}, Acc) ->
-%    io:format(user, "put FSM: ~p\n", [Usecs]),
     ?MODULE ! {put_fsm_usecs, Moment, Usecs},
     Acc;
+stat_trace({trace, Pid, call, {bitcask, Fun, _}}, Acc) ->
+    gb_trees:insert({Pid, bc, Fun}, os:timestamp(), Acc);
+stat_trace({trace, Pid, return_from, {bitcask, Fun, _}, _Result}, Acc) ->
+    case gb_trees:lookup({Pid, bc, Fun}, Acc) of
+        {value, StartTime} ->
+            Usecs = timer:now_diff(os:timestamp(), StartTime),
+            ?MODULE ! {{bitcask, Fun}, timestamp(), Usecs};
+        none ->
+            ok
+    end,
+    gb_trees:delete({Pid, bc, Fun}, Acc);
 stat_trace({trace, _Pid, call, {_Mod, _Fun, _Args}}, Acc) ->
     %% io:format(user, "missed: ~p\n", [{_Mod, _Fun, _Args}]),
     Acc.
@@ -280,6 +327,11 @@ schedule_reset_fsm_hists(State = #state{fsms_tref = OldTref, fsms_interval = Int
     maybe_cancel_timer(OldTref),
     Tref = erlang:send_after(Interval, self(), reset_fsm_hists),
     State#state{fsms_tref = Tref}.
+
+schedule_reset_bc_hists(State = #state{bc_tref = OldTref, bc_interval = Interval}) ->
+    maybe_cancel_timer(OldTref),
+    Tref = erlang:send_after(Interval, self(), reset_bc_hists),
+    State#state{bc_tref = Tref}.
 
 schedule_log_vnodes(State = #state{vnode_tref = OldTref, vnode_interval = Interval}) ->
     maybe_cancel_timer(OldTref),
@@ -309,17 +361,6 @@ open(Filename, Options) ->
 
 
 
-%% trace({trace, Pid, call, {Mod, Fun, _}}, Acc) ->
-%%     orddict:store({Pid, Mod, Fun}, now(), Acc);
-%% trace({trace, Pid, return_from, {Mod, Fun, _}, _Result}, Acc) ->
-%%     case orddict:find({Pid, Mod, Fun}, Acc) of
-%%         {ok, StartTime} ->
-%%             ElapsedUs = timer:now_diff(now(), StartTime),
-%%             io:format(user, "~p:~p:~p: ~p us\n", [Pid, Mod, Fun, ElapsedUs]),
-%%             Acc;
-%%         error ->
-%%             Acc
-%%     end.
 
 
 %% %% do_put, do_put
