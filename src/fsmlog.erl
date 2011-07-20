@@ -24,10 +24,11 @@
                 vnode_tref,
                 vnode_interval,
                 vnode_idxs = [], % { Pid, VnodeIdx}
-                get_fsm_5min = new_fsm_hist(),
-                put_fsm_5min = new_fsm_hist(),
-                get_bc_5min = new_fsm_hist(),
-                put_bc_5min = new_fsm_hist()
+                get_fsm_5min = new_hist(),
+                put_fsm_5min = new_hist(),
+                bc_get_5min = new_hist(),
+                bc_getnf_5min = new_hist(),
+                bc_put_5min = new_hist()
                }).
 
 
@@ -157,30 +158,42 @@ handle_info({put_fsm_usecs, Moment, Usecs}, State = #state{put_fsm_5min = FiveMi
     State1 = trace_log_fsm(put_fsm, Moment, Usecs, State),
     {noreply, State1#state{put_fsm_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
 
-handle_info({{bitcask, get}, Timestamp, Usecs}, State = #state{get_bc_5min = FiveMinHist}) ->
-    State1 = trace_log(get_bc, Timestamp, Usecs, State),
-    {noreply, State1#state{get_bc_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
-handle_info({{bitcask, put}, Timestamp, Usecs}, State = #state{put_bc_5min = FiveMinHist}) ->
-    State1 = trace_log(put_bc, Timestamp, Usecs, State),
-    {noreply, State1#state{put_bc_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
+
+handle_info({bitcask, bc_getnf=Op, Timestamp, Usecs},
+            State = #state{bc_getnf_5min = FiveMinHist}) ->
+    State1 = trace_log(Op, Timestamp, Usecs, State),
+    {noreply, State1#state{bc_getnf_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
+handle_info({bitcask, bc_get=Op, Timestamp, Usecs}, State = #state{bc_get_5min = FiveMinHist}) ->
+    State1 = trace_log(Op, Timestamp, Usecs, State),
+    {noreply, State1#state{bc_get_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
+handle_info({bitcask, bc_put=Op, Timestamp, Usecs},
+            State = #state{bc_put_5min = FiveMinHist}) ->
+    State1 = trace_log(Op, Timestamp, Usecs, State),
+    {noreply, State1#state{bc_put_5min = basho_stats_histogram:update(Usecs, FiveMinHist)}};
+%% Track errors separately, no hist update
+handle_info({bitcask, Op, Timestamp, Usecs}, State) ->
+    {noreply, trace_log(Op, Timestamp, Usecs, State)};
 handle_info(reset_fsm_hists, State = #state{stats_fh = Fh,
                                             get_fsm_5min = Get5,
                                             put_fsm_5min = Put5}) ->
     State1 = schedule_reset_fsm_hists(State),
     TS = timestamp(),
-    log_hist_stats(TS, get, Get5, Fh),
-    log_hist_stats(TS, put, Put5, Fh),
-    {noreply, State1#state{get_fsm_5min = new_fsm_hist(),
-                          put_fsm_5min = new_fsm_hist()}};
+    log_hist_stats(TS, getfsm, Get5, Fh),
+    log_hist_stats(TS, putfsm, Put5, Fh),
+    {noreply, State1#state{get_fsm_5min = new_hist(),
+                           put_fsm_5min = new_hist()}};
 handle_info(reset_bc_hists, State = #state{stats_fh = Fh,
-                                           get_bc_5min = Get5,
-                                           put_bc_5min = Put5}) ->
+                                           bc_get_5min = Get5,
+                                           bc_getnf_5min = GetNF5,
+                                           bc_put_5min = Put5}) ->
     State1 = schedule_reset_bc_hists(State),
     TS = timestamp(),
     log_hist_stats(TS, bcget, Get5, Fh),
+    log_hist_stats(TS, bcgetnf, GetNF5, Fh),
     log_hist_stats(TS, bcput, Put5, Fh),
-    {noreply, State1#state{get_fsm_5min = new_fsm_hist(),
-                           put_fsm_5min = new_fsm_hist()}};
+    {noreply, State1#state{bc_get_5min = new_hist(),
+                           bc_getnf_5min = new_hist(),
+                           bc_put_5min = new_hist()}};
 
 handle_info(log_vnodes, State = #state{vnode_fh = Fh}) ->
     State1 = schedule_log_vnodes(State),
@@ -304,22 +317,37 @@ stat_trace({trace, _Pid, call, {_Mod, _Fun, [{get_fsm_time, Usecs}, Moment, _Sta
 stat_trace({trace, _Pid, call, {_Mod, _Fun, [{put_fsm_time, Usecs}, Moment, _State]}}, Acc) ->
     ?MODULE ! {put_fsm_usecs, Moment, Usecs},
     Acc;
-stat_trace({trace, Pid, call, {bitcask, Fun, _}}, Acc) ->
+stat_trace({trace, Pid, call, {bitcask, Fun, _}}=_Msg, Acc) ->
+%    io:format("BC: ~p\n", [Msg]),
     gb_trees:insert({Pid, bc, Fun}, os:timestamp(), Acc);
-stat_trace({trace, Pid, return_from, {bitcask, Fun, _}, _Result}, Acc) ->
+stat_trace({trace, Pid, return_from, {bitcask, Fun, _}, Result}=_Msg, Acc) ->
+    Op = case {Fun, Result} of
+             {put, ok} ->
+                 bc_put;
+             {put, _} ->
+                 bc_puterr;
+             {get, {ok, _}} ->
+                 bc_get;
+             {get, not_found} ->
+                 bc_getnf;
+             {get, _} ->
+                 bc_geterr
+         end,
     case gb_trees:lookup({Pid, bc, Fun}, Acc) of
         {value, StartTime} ->
             Usecs = timer:now_diff(os:timestamp(), StartTime),
-            ?MODULE ! {{bitcask, Fun}, timestamp(), Usecs};
+            ?MODULE ! {bitcask, Op, timestamp(), Usecs};
         none ->
             ok
     end,
-    gb_trees:delete({Pid, bc, Fun}, Acc);
+    Acc1 = gb_trees:delete({Pid, bc, Fun}, Acc),
+%    io:format("BC ~p: return_from ~p\nAcc: ~p\n", [Op, Msg, Acc1]),
+    Acc1;
 stat_trace({trace, _Pid, call, {_Mod, _Fun, _Args}}, Acc) ->
     %% io:format(user, "missed: ~p\n", [{_Mod, _Fun, _Args}]),
     Acc.
 
-new_fsm_hist() ->
+new_hist() ->
     %% Tracks latencies up to 5 secs w/ 250 us resolution
     basho_stats_histogram:new(0, 5000000, 20000).
   
