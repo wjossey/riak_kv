@@ -32,6 +32,12 @@
          get/3,
          put/5,
          delete/4,
+         list/1,
+         list_bucket/2,
+         fold/3,
+         fold_keys/3,
+         fold_bucket_keys/4,
+         range/3,
          drop/1,
          fold_buckets/4,
          fold_keys/4,
@@ -44,6 +50,12 @@
                    to_object_key/2, from_object_key/1,
                    to_index_key/4, from_index_key/1
                   ]}).
+
+%% -record(state, { ref,
+%%                  data_root,
+%%                  read_opts = [],
+%%                  write_opts = [],
+%%                  fold_opts = [{fill_cache, false}]}).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -288,6 +300,39 @@ drop(#state{data_root=DataRoot}=State) ->
             end;
         {error, Reason} ->
             {error, Reason, State}
+    end.
+
+%% @doc Peform a range query returning all values from `Start' to
+%% `End' inclusive.
+-spec range(#state{}, riak_object:bkey() | first, riak_object:bkey() | last) ->
+                   [riak_object:value()].
+range(#state{ref=Ref}, Start0, End0) ->
+    %% TODO Look at fill cache?
+    %% TODO Gonna want to stream out to a function that is passed in
+    %% but for now return whole big chunk at once
+    Start = case Start0 of
+                first -> Start0;
+                _ -> sext:encode(Start0)
+            end,
+    End = case End0 of
+              last -> End0;
+              _ -> sext:encode(End0)
+          end,
+    {ok, Itr} = eleveldb:iterator(Ref, []),
+    case eleveldb:iterator_move(Itr, Start) of
+        %% Start is after last key
+        {error, invalid_iterator} -> none_match;
+        {ok, Key, Val} ->
+            if End == last orelse Key =< End -> range2(Itr, End, [Val]);
+               true -> none_match
+            end
+    end.
+
+range2(Itr, End, Acc) ->
+    case eleveldb:iterator_move(Itr, next) of
+        {ok, K, V} when End == last orelse K =< End -> range2(Itr, End, [V|Acc]);
+        {error, invalid_iterator} -> lists:reverse(Acc);
+        {ok, _K, _V} -> lists:reverse(Acc)
     end.
 
 %% @doc Returns true if this eleveldb backend contains any
@@ -543,5 +588,28 @@ cleanup(_) ->
     ?_assertCmd("rm -rf test/eleveldb-backend").
 
 -endif. % EQC
+
+range_test() ->
+    {ok, S} = start(42, []),
+    {A, AL} = {{<<"ppl">>, <<"andy">>}, <<"san francisco">>},
+    {J, JL} = {{<<"ppl">>, <<"joe">>}, <<"denver">>},
+    {R, RL} = {{<<"ppl">>, <<"ryan">>}, <<"baltimore">>},
+    {Ad, AdL} = {{<<"ppl">>, <<"andrew">>}, <<"upstate new york">>},
+    Mk = fun(X) -> {<<"ppl">>, X} end,
+
+    ?MODULE:put(S, A, AL),
+    ?MODULE:put(S, J, JL),
+    ?MODULE:put(S, R, RL),
+    ?MODULE:put(S, Ad, AdL),
+    ?assertEqual([AdL, AL, JL, RL], range(S, first, last)),
+    ?assertEqual([AdL, AL, JL, RL], range(S, Ad, last)),
+    ?assertEqual([AdL, AL, JL, RL], range(S, Ad, R)),
+    ?assertEqual([AdL, AL, JL, RL], range(S, Ad, Mk(<<"z">>))),
+    ?assertEqual([AdL, AL, JL, RL], range(S, Mk(<<"a">>), Mk(<<"z">>))),
+    ?assertEqual([AL, JL], range(S, A, J)),
+    ?assertEqual([AL], range(S, A, A)),
+    ?assertEqual([RL], range(S, R, last)),
+    ?assertEqual(none_match, range(S, Mk(<<"tom">>), last)),
+    ?assertEqual(none_match, range(S, Mk(<<"alex">>), Mk(<<"ali">>))).
 
 -endif.
