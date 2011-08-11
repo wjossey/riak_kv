@@ -468,7 +468,8 @@ handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
     end;
-handle_coverage(?KV_RANGE_REQ{start=Start,
+handle_coverage(?KV_RANGE_REQ{bucket=Bucket,
+                              start=Start,
                               'end'=End},
                 _FilterVNodes,
                 Sender,
@@ -479,7 +480,7 @@ handle_coverage(?KV_RANGE_REQ{start=Start,
     %% TODO Not really sure what FilterVnodes is so just say 'none'.
     %% FilterVNode = proplists:get_value(Index, FilterVNodes),
     %% Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
-    range(Sender, Start, End, none, Mod, ModState),
+    range(Sender, Bucket, Start, End, none, Mod, ModState),
     {noreply, State}.
 
 
@@ -936,6 +937,7 @@ ack_keys({Pid, Ref}) ->
     Pid ! {Ref, ok}.
 
 %% @private
+<<<<<<< HEAD
 finish_fun(BufferMod, Sender) ->
     fun(Buffer) ->
             finish_fold(BufferMod, Buffer, Sender)
@@ -944,6 +946,11 @@ finish_fun(BufferMod, Sender) ->
 range(Sender, Start, End, _Filter, Mod, ModState) ->
     Vals = Mod:range(ModState, Start, End),
     riak_core_vnode:reply(Sender, {final_results, Vals}).
+=======
+range(Sender, Bucket, Start, End, _Filter, Mod, ModState) ->
+    Vals = Mod:range(ModState, {Bucket, Start}, {Bucket, End}),
+    riak_core_vnode:reply(Sender, {final_results, {Bucket, Vals}}).
+>>>>>>> 1st hack at range coordinator, copy/paste job from list keys
     %% case Filter of
     %%     none ->
     %%         riak_core_vnode:reply(Sender, {final_results, Vals});

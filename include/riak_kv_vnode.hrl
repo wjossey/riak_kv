@@ -55,6 +55,7 @@
           from :: term()}).
 
 -record(riak_kv_range_req_v1, {
+          bucket :: binary() | tuple(),
           start :: riak_object:bkey(),
           'end' :: riak_object:bkey()}).
 
