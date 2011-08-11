@@ -38,7 +38,8 @@
          fold/3,
          get_vclocks/2,
          vnode_status/1,
-         ack_keys/1]).
+         ack_keys/1,
+         range/5]).
 
 %% riak_core_vnode API
 -export([init/1,
@@ -182,6 +183,14 @@ fold(Preflist, Fun, Acc0) ->
                                                  foldfun=Fun,
                                                  acc0=Acc0},
                                               riak_kv_vnode_master).
+
+range(Preflist, _ReqId, _Caller, Start, End) ->
+  riak_core_vnode_master:command(Preflist,
+                                 #riak_kv_range_req_v1{
+                                   start=Start,
+                                   'end'=End},
+                                 ignore,
+                                 riak_kv_vnode_master).
 
 get_vclocks(Preflist, BKeyList) ->
     riak_core_vnode_master:sync_spawn_command(Preflist,
@@ -458,7 +467,21 @@ handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
             end;
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
-    end.
+    end;
+handle_coverage(?KV_RANGE_REQ{start=Start,
+                              'end'=End},
+                _FilterVNodes,
+                Sender,
+                State=#state{idx=_Index,
+                             mod=Mod,
+                             modstate=ModState}) ->
+    %% Construct the filter function
+    %% TODO Not really sure what FilterVnodes is so just say 'none'.
+    %% FilterVNode = proplists:get_value(Index, FilterVNodes),
+    %% Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
+    range(Sender, Start, End, none, Mod, ModState),
+    {noreply, State}.
+
 
 %% Convenience for handling both v3 and v4 coverage-based listkeys
 handle_coverage_listkeys(Bucket, ItemFilter, ResultFun,
@@ -504,7 +527,6 @@ handle_handoff_command(Req=?KV_PUT_REQ{}, Sender, State) ->
 %% Handle all unspecified cases locally without forwarding
 handle_handoff_command(Req, Sender, State) ->
     handle_command(Req, Sender, State).
-
 
 handoff_starting(_TargetNode, State) ->
     {true, State#state{in_handoff=true}}.
@@ -918,6 +940,17 @@ finish_fun(BufferMod, Sender) ->
     fun(Buffer) ->
             finish_fold(BufferMod, Buffer, Sender)
     end.
+
+range(Sender, Start, End, _Filter, Mod, ModState) ->
+    Vals = Mod:range(ModState, Start, End),
+    riak_core_vnode:reply(Sender, {final_results, Vals}).
+    %% case Filter of
+    %%     none ->
+    %%         riak_core_vnode:reply(Sender, {final_results, Vals});
+    %%     _ ->
+    %%         FilteredKeys = lists:foldl(Filter, [], Vals),
+    %%         riak_core_vnode:reply(Sender, {final_results, Vals})
+    %% end.
 
 %% @private
 finish_fold(BufferMod, Buffer, Sender) ->
