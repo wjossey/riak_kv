@@ -306,10 +306,11 @@ drop(#state{data_root=DataRoot}=State) ->
 %% `End' inclusive.
 -spec range(#state{}, riak_object:bkey() | first, riak_object:bkey() | last) ->
                    [riak_object:value()].
-range(#state{ref=Ref}, Start0, End0) ->
+range(#state{ref=Ref, data_root=Root}, Start0, End0) ->
     %% TODO Look at fill cache?
     %% TODO Gonna want to stream out to a function that is passed in
     %% but for now return whole big chunk at once
+    lager:info("range [~p]: ~p to ~p", [Root, Start0, End0]),
     Start = case Start0 of
                 first -> Start0;
                 _ -> sext:encode(Start0)
