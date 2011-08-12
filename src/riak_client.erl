@@ -814,6 +814,22 @@ wait_for_query_results(ReqId, Timeout, Acc) ->
             {error, timeout, Acc}
     end.
 
+%% @private
+%% wait_for_range(ReqId, Timeout) ->
+%%     wait_for_listkeys(ReqId,Timeout,[]).
+
+%% %% @private
+%% %% TODO: Merge sort
+%% wait_for_range(ReqId,Timeout,Acc) ->
+%%     receive
+%%         {ReqId, done} -> {ok, lists:flatten(Acc)};
+%%         {ReqId,{vals,Res}} -> wait_for_range(ReqId,Timeout,[Res|Acc]);
+%%         {ReqId, Error} -> {error, Error}
+%%     after Timeout ->
+%%             {error, timeout, Acc}
+%%     end.
+
+
 add_inputs(_FlowPid, []) ->
     ok;
 add_inputs(FlowPid, Inputs) when length(Inputs) < 100 ->

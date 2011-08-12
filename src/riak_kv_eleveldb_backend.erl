@@ -22,6 +22,7 @@
 
 -module(riak_kv_eleveldb_backend).
 -behavior(riak_kv_backend).
+-include("riak_kv_backend.hrl").
 
 %% KV Backend API
 -export([api_version/0,
@@ -37,7 +38,8 @@
          fold/3,
          fold_keys/3,
          fold_bucket_keys/4,
-         range/3,
+         range/2,
+         range/4,
          drop/1,
          fold_buckets/4,
          fold_keys/4,
@@ -303,10 +305,14 @@ drop(#state{data_root=DataRoot}=State) ->
     end.
 
 %% @doc Peform a range query returning all values from `Start' to
-%% `End' inclusive.
--spec range(#state{}, riak_object:bkey() | first, riak_object:bkey() | last) ->
-                   [riak_object:value()].
-range(#state{ref=Ref, data_root=Root}, Start0, End0) ->
+%% `End' inclusive.  Limit the number of results to `Limit'.  The
+%% return value is the list of values along with a continuation that
+%% can be used to fetch more results in the case where the limit was
+%% reached.
+-spec range(#state{}, riak_object:bkey() | first, riak_object:bkey() | last,
+            non_neg_integer()) ->
+                   {ok, Vals::[riak_object:value()], Cont::riak_kv_backend:cont()}.
+range(#state{ref=Ref, data_root=Root}, Start0, End0, Limit) when Limit > 0 ->
     %% TODO Look at fill cache?
     %% TODO Gonna want to stream out to a function that is passed in
     %% but for now return whole big chunk at once
@@ -322,18 +328,37 @@ range(#state{ref=Ref, data_root=Root}, Start0, End0) ->
     {ok, Itr} = eleveldb:iterator(Ref, []),
     case eleveldb:iterator_move(Itr, Start) of
         %% Start is after last key
-        {error, invalid_iterator} -> none_match;
+        {error, invalid_iterator} -> {ok, [], done};
         {ok, Key, Val} ->
-            if End == last orelse Key =< End -> range2(Itr, End, [Val]);
-               true -> none_match
+            if End == last orelse Key =< End ->
+                    range2(Itr, End, [Val], {Limit, Limit - 1}, Key);
+               true -> {ok, [], done}
             end
     end.
 
-range2(Itr, End, Acc) ->
+range(_State, done) ->
+    {ok, [], done};
+range(#state{ref=Ref}, #cont{limit=Limit, prev_key=PrevKey, 'end'=End}) ->
+    {ok, Itr} = eleveldb:iterator(Ref, []),
+    case eleveldb:iterator_move(Itr, PrevKey) of
+        {error, invalid_iterator} -> {ok, [], done};
+        {ok, PrevKey, _Val} -> range2(Itr, End, [], {Limit, Limit}, PrevKey)
+    end.
+
+range2(Itr, End, Acc, {Limit, 0}, PrevKey) ->
+    eleveldb:iterator_close(Itr),
+    {ok, lists:reverse(Acc), #cont{limit=Limit, prev_key=PrevKey, 'end'=End}};
+
+range2(Itr, End, Acc, {Limit, N}, _) ->
     case eleveldb:iterator_move(Itr, next) of
-        {ok, K, V} when End == last orelse K =< End -> range2(Itr, End, [V|Acc]);
-        {error, invalid_iterator} -> lists:reverse(Acc);
-        {ok, _K, _V} -> lists:reverse(Acc)
+        {ok, K, V} when End == last orelse K =< End ->
+            range2(Itr, End, [V|Acc], {Limit, N-1}, K);
+        {error, invalid_iterator} ->
+            eleveldb:iterator_close(Itr),
+            {ok, lists:reverse(Acc), done};
+        {ok, _K, _V} ->
+            eleveldb:iterator_close(Itr),
+            {ok, lists:reverse(Acc), done}
     end.
 
 %% @doc Returns true if this eleveldb backend contains any
