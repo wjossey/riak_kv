@@ -39,6 +39,7 @@
          get_vclocks/2,
          vnode_status/1,
          ack_keys/1,
+         range/4,
          range/5]).
 
 %% riak_core_vnode API
@@ -183,6 +184,14 @@ fold(Preflist, Fun, Acc0) ->
                                                  foldfun=Fun,
                                                  acc0=Acc0},
                                               riak_kv_vnode_master).
+
+range(Preflist, _ReqId, _Caller, Cont) ->
+  riak_core_vnode_master:command(Preflist,
+                                 #riak_kv_range_req_v1{
+                                   cont=Cont
+                                  },
+                                 ignore,
+                                 riak_kv_vnode_master).
 
 range(Preflist, _ReqId, _Caller, Start, End) ->
   riak_core_vnode_master:command(Preflist,
@@ -468,9 +477,9 @@ handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
     end;
-handle_coverage(?KV_RANGE_REQ{bucket=Bucket,
-                              start=Start,
-                              'end'=End},
+
+handle_coverage(?KV_RANGE_CONT_REQ{bucket=Bucket,
+                                   cont=Cont},
                 _FilterVNodes,
                 Sender,
                 State=#state{idx=_Index,
@@ -480,7 +489,23 @@ handle_coverage(?KV_RANGE_REQ{bucket=Bucket,
     %% TODO Not really sure what FilterVnodes is so just say 'none'.
     %% FilterVNode = proplists:get_value(Index, FilterVNodes),
     %% Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
-    range(Sender, Bucket, Start, End, none, Mod, ModState),
+    range(Sender, Bucket, Cont, none, Mod, ModState),
+    {noreply, State};
+
+handle_coverage(?KV_RANGE_REQ{bucket=Bucket,
+                              start=Start,
+                              'end'=End,
+                              limit=Limit},
+                _FilterVNodes,
+                Sender,
+                State=#state{idx=_Index,
+                             mod=Mod,
+                             modstate=ModState}) ->
+    %% Construct the filter function
+    %% TODO Not really sure what FilterVnodes is so just say 'none'.
+    %% FilterVNode = proplists:get_value(Index, FilterVNodes),
+    %% Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
+    range(Sender, Bucket, Start, End, Limit, none, Mod, ModState),
     {noreply, State}.
 
 
@@ -942,13 +967,17 @@ finish_fun(BufferMod, Sender) ->
             finish_fold(BufferMod, Buffer, Sender)
     end.
 
-range(Sender, Bucket, Start, End0, _Filter, Mod, ModState) ->
+range(Sender, Bucket, Cont, _Filter, Mod, ModState) ->
+    {ok, Vals, Cont} = Mod:range(ModState, Cont),
+    riak_core_vnode:reply(Sender, {final_results, {Bucket, Vals, Cont}}).
+
+range(Sender, Bucket, Start, End0, Limit, _Filter, Mod, ModState) ->
     End = case End0 of
               last -> last;
               _ -> {Bucket, End0}
           end,
-    Vals = Mod:range(ModState, {Bucket, Start}, End),
-    riak_core_vnode:reply(Sender, {final_results, {Bucket, Vals}}).
+    {ok, Vals, Cont}  = Mod:range(ModState, {Bucket, Start}, End, Limit),
+    riak_core_vnode:reply(Sender, {final_results, {Bucket, Vals, Cont}}).
     %% case Filter of
     %%     none ->
     %%         riak_core_vnode:reply(Sender, {final_results, Vals});

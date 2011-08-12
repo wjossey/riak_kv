@@ -40,7 +40,7 @@
 %% the number of primary preflist vnodes the operation
 %% should cover, the service to use to check for available nodes,
 %% and the registered name to use to access the vnode master process.
-init(From={_, _, ClientPid}, [Bucket, Start, End, Timeout, ClientType]) ->
+init(From={_, _, ClientPid}, [Bucket, Start, End, Limit, Timeout, ClientType]) ->
     case ClientType of
         %% Link to the mapred job so we die if the job dies
         mapred ->
@@ -52,19 +52,35 @@ init(From={_, _, ClientPid}, [Bucket, Start, End, Timeout, ClientType]) ->
     NVal = proplists:get_value(n_val, BucketProps),
     Req = ?KV_RANGE_REQ{bucket=Bucket,
                         start=Start,
-                        'end'=End},
+                        'end'=End,
+                        limit=Limit},
+    {Req, all, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout,
+     #state{client_type=ClientType, from=From}};
+
+init(From={_, _, ClientPid}, [Bucket, Cont, Timeout, ClientType]) ->
+    case ClientType of
+        %% Link to the mapred job so we die if the job dies
+        mapred ->
+            link(ClientPid);
+        _ ->
+            ok
+    end,
+    BucketProps = riak_core_bucket:get_bucket(Bucket),
+    NVal = proplists:get_value(n_val, BucketProps),
+    Req = ?KV_RANGE_CONT_REQ{bucket=Bucket,
+                             cont=Cont},
     {Req, all, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout,
      #state{client_type=ClientType, from=From}}.
 
-process_results({results, {Bucket, Vals}},
+process_results({results, {Bucket, Vals, Cont}},
                 StateData=#state{client_type=ClientType,
                                  from={raw, ReqId, ClientPid}}) ->
-    process_vals(ClientType, Bucket, Vals, ReqId, ClientPid),
+    process_vals(ClientType, Bucket, Vals, Cont, ReqId, ClientPid),
     {ok, StateData};
-process_results({final_results, {Bucket, Vals}},
+process_results({final_results, {Bucket, Vals, Cont}},
                 StateData=#state{client_type=ClientType,
                                  from={raw, ReqId, ClientPid}}) ->
-    process_vals(ClientType, Bucket, Vals, ReqId, ClientPid),
+    process_vals(ClientType, Bucket, Vals, Cont, ReqId, ClientPid),
     {done, StateData}.
 
 finish({error, Error},
@@ -97,11 +113,11 @@ finish(clean,
 %% Internal functions
 %% ===================================================================
 
-process_vals(plain, _Bucket, Vals, ReqId, ClientPid) ->
-    ClientPid ! {ReqId, {vals, Vals}};
-process_vals(mapred, Bucket, Vals, _ReqId, ClientPid) ->
-    try
-        luke_flow:add_inputs(ClientPid, [{Bucket, Val} || Val <- Vals])
-    catch _:_ ->
-            exit(self(), normal)
-    end.
+process_vals(plain, _Bucket, Vals, Cont, ReqId, ClientPid) ->
+    ClientPid ! {ReqId, {ok, Vals, Cont}}.
+%% process_vals(mapred, Bucket, Vals, _ReqId, ClientPid) ->
+%%     try
+%%         luke_flow:add_inputs(ClientPid, [{Bucket, Val} || Val <- Vals])
+%%     catch _:_ ->
+%%             exit(self(), normal)
+%%     end.

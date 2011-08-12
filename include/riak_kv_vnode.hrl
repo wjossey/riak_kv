@@ -1,3 +1,4 @@
+-include("riak_kv_backend.hrl").
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
 -record(riak_kv_put_req_v1, {
@@ -55,8 +56,15 @@
           from :: term()}).
 
 -record(riak_kv_range_req_v1, {
+          cont :: cont(),
           bucket :: binary() | tuple(),
           start :: riak_object:bkey(),
+          'end' :: riak_object:bkey(),
+          limit :: non_neg_integer()}).
+
+-record(riak_kv_range_cont_req_v1, {
+          cont :: cont(),
+          bucket :: binary() | tuple(),
           'end' :: riak_object:bkey()}).
 
 -record(riak_kv_vclock_req_v1, {
@@ -74,4 +82,5 @@
 -define(KV_MAP_REQ, #riak_kv_map_req_v1).
 -define(KV_VCLOCK_REQ, #riak_kv_vclock_req_v1).
 -define(KV_RANGE_REQ, #riak_kv_range_req_v1).
+-define(KV_RANGE_CONT_REQ, #riak_kv_range_cont_req_v1).
 

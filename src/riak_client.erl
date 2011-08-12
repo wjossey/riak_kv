@@ -40,7 +40,7 @@
          stream_list_keys/4,stream_list_keys/5]).
 -export([filter_buckets/1]).
 -export([filter_keys/2,filter_keys/3]).
--export([range/3, range/4, range/5]).
+-export([range/2, range/3, range/5, range/6]).
 -export([list_buckets/0,list_buckets/2]).
 -export([get_index/3,get_index/2]).
 -export([stream_get_index/3,stream_get_index/2]).
@@ -55,6 +55,7 @@
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_ERRTOL, 0.00003).
 
+-include("riak_kv_backend.hrl").
 -type riak_client() :: term().
 
 %% @spec mapred(Inputs :: riak_kv_mapred_term:mapred_inputs(),
@@ -656,23 +657,38 @@ filter_buckets(Fun) ->
             list_buckets(Fun, ?DEFAULT_TIMEOUT)
     end.
 
+range(Bucket, Cont) ->
+    range(Bucket, Cont, self()).
+
 %% @doc Stream objects from `Bucket' with keys in the range from
 %% `Start' to `End' inclusive.  Use the symbolic values `first' and
 %% `last' to represent first and last keys in bucket respetively.
 -spec range(riak_object:bucket(), riak_object:key(), riak_object:key()) ->
                    {ok, ReqId :: term()}.
+range(Bucket, Cont=#cont{}, Client) ->
+    range(Bucket, Cont, Client, ?DEFAULT_TIMEOUT);
+
 range(Bucket, Start, End) ->
     range(Bucket, Start, End, ?DEFAULT_TIMEOUT).
 
-range(Bucket, Start, End, Timeout) ->
-    range(Bucket, Start, End, Timeout, self()).
-
-range(Bucket, Start, End, Timeout, Client) ->
+range(Bucket, Cont=#cont{}, Client, Timeout) ->
     ReqId = mk_reqid(),
     Id = {raw, ReqId, Client},
     riak_kv_range_fsm_sup:start_range_fsm(Node,
                                           [Id,
-                                           [Bucket, Start, End, Timeout, plain]]),
+                                           [Bucket, Cont, Timeout, plain]]),
+    {ok, ReqId}.
+
+range(Bucket, Start, End, Limit, Timeout) ->
+    range(Bucket, Start, End, Limit, Timeout, self()).
+
+range(Bucket, Start, End, Limit, Timeout, Client) ->
+    ReqId = mk_reqid(),
+    Id = {raw, ReqId, Client},
+    riak_kv_range_fsm_sup:start_range_fsm(Node,
+                                          [Id,
+                                           [Bucket, Start, End, Limit,
+                                            Timeout, plain]]),
     {ok, ReqId}.
 
 %% @spec get_index(Bucket :: binary(),
