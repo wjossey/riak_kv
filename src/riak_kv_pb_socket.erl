@@ -118,6 +118,24 @@ handle_info({ReqId, Error},
     inet:setopts(Socket, [{active, once}]),
     {noreply, NewState#state{req = undefined, req_ctx = undefined}};
 
+%% Handle responses from stream_range
+handle_info({ReqId, done},
+            State=#state{sock = Socket, req=#rpbrangereq{}, req_ctx=ReqId}) ->
+    NewState = send_msg(#rpbrangeresp{done = 1}, State),
+    inet:setopts(Socket, [{active, once}]),
+    {noreply, NewState#state{req = undefined, req_ctx = undefined}};
+handle_info({ReqId, {vals, []}}, State=#state{req=#rpbrangereq{},
+                                              req_ctx=ReqId}) ->
+    {noreply, State};
+handle_info({ReqId, {vals, Vals}}, State=#state{req=#rpbrangereq{},
+                                                req_ctx=ReqId}) ->
+    {noreply, send_msg(#rpbrangeresp{vals = Vals}, State)};
+handle_info({ReqId, Error},
+            State=#state{sock = Socket, req=#rpbrangereq{}, req_ctx=ReqId}) ->
+    NewState = send_error("~p", [Error], State),
+    inet:setopts(Socket, [{active, once}]),
+    {noreply, NewState#state{req = undefined, req_ctx = undefined}};
+
 %% PIPE Handle response from mapred_stream
 handle_info(#pipe_eoi{ref=ReqId},
             State=#state{req=#rpbmapredreq{},
@@ -430,13 +448,22 @@ process_message(rpblistbucketsreq,
             send_error("~p", [Reason], State)
     end;
 
-%% Start streaming in list keys 
+%% Start streaming in list keys
 process_message(#rpblistkeysreq{bucket=B}=Req, 
                 #state{client=C} = State) ->
     %% Pause incoming packets - stream_list_keys results
-    %% will be processed by handle_info, it will 
+    %% will be processed by handle_info, it will
     %% set socket active again on completion of streaming.
     {ok, ReqId} = C:stream_list_keys(B),
+    {pause, State#state{req = Req, req_ctx = ReqId}};
+
+%% Start streaming range 
+process_message(#rpbrangereq{bucket=B, start_key=S, end_key=E}=Req,
+                #state{client=C} = State) ->
+    %% Pause incoming packets - stream_range results
+    %% will be processed by handle_info, it will 
+    %% set socket active again on completion of streaming.
+    {ok, ReqId} = C:stream_range(B, S, E),
     {pause, State#state{req = Req, req_ctx = ReqId}};
 
 %% Get bucket properties
