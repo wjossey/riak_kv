@@ -48,10 +48,8 @@ init(From={_, _, ClientPid}, [Bucket, Start, End, Timeout, ClientType]) ->
         _ ->
             ok
     end,
-    %% Get the bucket n_val for use in creating a coverage plan
     BucketProps = riak_core_bucket:get_bucket(Bucket),
     NVal = proplists:get_value(n_val, BucketProps),
-    %% Construct the key listing request
     Req = ?KV_RANGE_REQ{bucket=Bucket,
                         start=Start,
                         'end'=End},

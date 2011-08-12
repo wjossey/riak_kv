@@ -937,20 +937,18 @@ ack_keys({Pid, Ref}) ->
     Pid ! {Ref, ok}.
 
 %% @private
-<<<<<<< HEAD
 finish_fun(BufferMod, Sender) ->
     fun(Buffer) ->
             finish_fold(BufferMod, Buffer, Sender)
     end.
 
-range(Sender, Start, End, _Filter, Mod, ModState) ->
-    Vals = Mod:range(ModState, Start, End),
-    riak_core_vnode:reply(Sender, {final_results, Vals}).
-=======
-range(Sender, Bucket, Start, End, _Filter, Mod, ModState) ->
-    Vals = Mod:range(ModState, {Bucket, Start}, {Bucket, End}),
+range(Sender, Bucket, Start, End0, _Filter, Mod, ModState) ->
+    End = case End0 of
+              last -> last;
+              _ -> {Bucket, End0}
+          end,
+    Vals = Mod:range(ModState, {Bucket, Start}, End),
     riak_core_vnode:reply(Sender, {final_results, {Bucket, Vals}}).
->>>>>>> 1st hack at range coordinator, copy/paste job from list keys
     %% case Filter of
     %%     none ->
     %%         riak_core_vnode:reply(Sender, {final_results, Vals});
