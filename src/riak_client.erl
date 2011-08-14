@@ -41,6 +41,7 @@
 -export([filter_buckets/1]).
 -export([filter_keys/2,filter_keys/3]).
 -export([range/2, range/3, range/5, range/6]).
+-export([collect_range/2]).
 -export([list_buckets/0,list_buckets/2]).
 -export([get_index/3,get_index/2]).
 -export([stream_get_index/3,stream_get_index/2]).
@@ -666,10 +667,7 @@ range(Bucket, Cont) ->
 -spec range(riak_object:bucket(), riak_object:key(), riak_object:key()) ->
                    {ok, ReqId :: term()}.
 range(Bucket, Cont=#cont{}, Client) ->
-    range(Bucket, Cont, Client, ?DEFAULT_TIMEOUT);
-
-range(Bucket, Start, End) ->
-    range(Bucket, Start, End, ?DEFAULT_TIMEOUT).
+    range(Bucket, Cont, Client, ?DEFAULT_TIMEOUT).
 
 range(Bucket, Cont=#cont{}, Client, Timeout) ->
     ReqId = mk_reqid(),
@@ -677,7 +675,10 @@ range(Bucket, Cont=#cont{}, Client, Timeout) ->
     riak_kv_range_fsm_sup:start_range_fsm(Node,
                                           [Id,
                                            [Bucket, Cont, Timeout, plain]]),
-    {ok, ReqId}.
+    {ok, ReqId};
+
+range(Bucket, Start, End, Limit) ->
+    range(Bucket, Start, End, Limit, ?DEFAULT_TIMEOUT).
 
 range(Bucket, Start, End, Limit, Timeout) ->
     range(Bucket, Start, End, Limit, Timeout, self()).
@@ -831,20 +832,61 @@ wait_for_query_results(ReqId, Timeout, Acc) ->
     end.
 
 %% @private
-%% wait_for_range(ReqId, Timeout) ->
-%%     wait_for_listkeys(ReqId,Timeout,[]).
+collect_range(ReqId, Timeout) ->
+    collect_range(ReqId, Timeout, {[], []}).
 
 %% %% @private
-%% %% TODO: Merge sort
-%% wait_for_range(ReqId,Timeout,Acc) ->
-%%     receive
-%%         {ReqId, done} -> {ok, lists:flatten(Acc)};
-%%         {ReqId,{vals,Res}} -> wait_for_range(ReqId,Timeout,[Res|Acc]);
-%%         {ReqId, Error} -> {error, Error}
-%%     after Timeout ->
-%%             {error, timeout, Acc}
-%%     end.
+%%
+%% TODO: Some dumb code here, make efficient
+%% Acc :: [Vals :: [binary()]]
+%% Conts :: [cont()]
+collect_range(ReqId, Timeout, {Acc, Conts}) ->
+    receive
+        {ReqId, done} ->
+            #cont{limit=Limit} = hd(Conts),
+            %% TODO Pass limit to merge
+            Vals = merge(Acc),
+            Vals2 = lists:sublist(Vals, Limit),
+            Last = lists:last(Vals2),
+            Cont = find_cont(Conts, Last),
+            {ok, Vals2, Cont};
+        {ReqId, {ok, [], done}} -> collect_range(ReqId, Timeout, {Acc, Conts});
+        {ReqId, {ok, Bins, Cont}} ->
+            Vals = lists:map(fun binary_to_term/1, Bins),
+            collect_range(ReqId, Timeout, {[Vals|Acc], [Cont|Conts]});
+        {ReqId, Error} -> {error, Error}
+    after Timeout ->
+            {error, timeout, Acc}
+    end.
 
+merge([Vals]) ->
+    Vals;
+merge([Vals1,Vals2|T]) ->
+    Vals3 = merge(Vals1, Vals2, []),
+    merge([Vals3|T]).
+
+merge([], L2, Acc) ->
+    lists:reverse(lists:flatten([lists:reverse(L2)|Acc]));
+
+merge(L1, [], Acc) ->
+    lists:reverse(lists:flatten([lists:reverse(L1)|Acc]));
+
+%% F returns true if H1 sorts before or equal to H2
+merge([H1|T1]=L1, [H2|T2]=L2, Acc) ->
+    case comp_keys(H1, H2) of
+        true -> merge(T1, L2, [H1|Acc]);
+        false -> merge(L1, T2, [H2|Acc])
+    end.
+
+find_cont(Conts, Last) ->
+    Key = sext:encode({riak_object:bucket(Last), riak_object:key(Last)}),
+    find_cont2(Conts, Key).
+
+find_cont2([C=#cont{prev_key=Key}|_], Key) -> C;
+find_cont2([_|T], Key) -> find_cont2(T, Key).
+
+comp_keys(O1, O2) ->
+    riak_object:key(O1) =< riak_object:key(O2).
 
 add_inputs(_FlowPid, []) ->
     ok;
