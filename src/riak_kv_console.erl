@@ -308,7 +308,12 @@ print_backend_statuses([]) ->
     ok;
 print_backend_statuses([Status | RestStatuses]) ->
     {VNodeIndex, Backend, StatusData} = Status,
-    StatusString = io_lib:format("VNode: ~p~nBackend: ~p~nStatus: ~p~n~n",
-                                 [VNodeIndex, Backend, StatusData]),
-    io:format("~s~n", [StatusString]),
+    if is_binary(StatusData) ->
+            StatusString = binary_to_list(StatusData),
+            io:format("VNode: ~p~nBackend: ~p~nStatus: ~n~s~n~n",
+                      [VNodeIndex, Backend, string:strip(StatusString)]);
+       true ->
+            io:format("VNode: ~p~nBackend: ~p~nStatus: ~n~p~n~n",
+                      [VNodeIndex, Backend, StatusData])
+    end,
     print_backend_statuses(RestStatuses).
