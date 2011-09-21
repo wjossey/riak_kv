@@ -47,6 +47,7 @@
          is_empty/1,
          delete/1,
          handle_handoff_command/3,
+         handle_shutdown_command/3,
          handoff_starting/2,
          handoff_cancelled/1,
          handoff_finished/2,
@@ -472,6 +473,13 @@ handle_handoff_command(Req=?FOLD_REQ{foldfun=FoldFun}, Sender, State) ->
 handle_handoff_command(Req={backend_callback, _Ref, _Msg}, Sender, State) ->
     handle_command(Req, Sender, State);
 handle_handoff_command(_Req, _Sender, State) -> {forward, State}.
+
+
+handle_shutdown_command(?KV_GET_REQ{req_id = ReqId}, _Sender, State=#state{idx=Idx}) ->
+    {reply, {r, {error, shutdown}, Idx, ReqId}, State};
+handle_shutdown_command(?KV_PUT_REQ{req_id = ReqId}, Sender, State=#state{idx=Idx}) ->
+    riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
+    {reply, {fail, Idx, ReqId}, State}.
 
 
 handoff_starting(_TargetNode, State) ->
