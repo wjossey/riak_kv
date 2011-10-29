@@ -413,6 +413,22 @@ object_size(Object) ->
     end,
     size(Bucket) + size(Key) + size(Val).
 
+%% @private
+to_object_key(Bucket, Key) ->
+    {o, Bucket, Key}.
+
+%% @private
+from_object_key({o, Bucket, Key}) ->
+    {Bucket, Key}.
+
+%% @private
+to_index_key(Bucket, Key, Field, Term) ->
+    {i, Bucket, Field, Term, Key}.
+
+%% @private
+from_index_key({i, Bucket, Field, Term, Key}) ->
+    {Bucket, Field, Term, Key}.
+
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================
