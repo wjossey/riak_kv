@@ -50,7 +50,8 @@ start_link(ReqId, Caller, Bucket) ->
 
 init([ReqId, Caller, Inputs]) ->
     erlang:monitor(process, Caller),
-    {ok, Bloom} = ebloom:new(10000000, 0.0001, crypto:rand_uniform(1, 5000)),
+    random:seed(now()),
+    {ok, Bloom} = ebloom:new(10000000, 0.0001, random:uniform(5000)),
     {Bucket, Filter} = build_filter(Inputs),
     {ok, waiting, #state{reqid=ReqId, caller=Caller, bloom=Bloom, bucket=Bucket,
                          filter=Filter}}.
