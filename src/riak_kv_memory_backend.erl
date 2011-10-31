@@ -121,9 +121,10 @@ stop(#state{data_ref=DataRef,
                  {error, term(), state()}.
 get(Bucket, Key, State=#state{data_ref=DataRef,
                               ttl=TTL}) ->
-    case ets:lookup(DataRef, {Bucket, Key}) of
+    StorageKey = to_object_key(Bucket, Key),
+    case ets:lookup(DataRef, StorageKey) of
         [] -> {error, not_found, State};
-        [{{Bucket, Key}, {{ts, Timestamp}, Val}}] ->
+        [{StorageKey, {{ts, Timestamp}, Val}}] ->
             case exceeds_ttl(Timestamp, TTL) of
                 true ->
                     delete(Bucket, Key, undefined, State),
@@ -356,8 +357,8 @@ get_folder(FoldFun, Acc, DataRef) ->
     end.
 
 %% @private
-do_put(Bucket, Key, Val, Ref) ->
-    Object = {{Bucket, Key}, Val},
+do_put(StorageKey, Val, Ref) ->
+    Object = {StorageKey, Val},
     true = ets:insert(Ref, Object),
     {ok, object_size(Object)}.
 
