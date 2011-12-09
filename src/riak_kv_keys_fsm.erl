@@ -47,7 +47,9 @@
 -type req_id() :: non_neg_integer().
 
 -record(state, {client_type :: plain | mapred,
-                from :: from()}).
+                from :: from(),
+                timeout_time :: {integer(), integer(), integer()},
+                max_msgs :: integer()}).
 
 %% @doc Return a tuple containing the ModFun to call per vnode,
 %% the number of primary preflist vnodes the operation
@@ -61,20 +63,39 @@ init(From={_, _, ClientPid}, [Bucket, ItemFilter, Timeout, ClientType]) ->
         _ ->
             ok
     end,
+    {NowA, NowB, NowC} = now(),
+    TimeoutTime = if Timeout == infinity ->
+                          {NowA + 999999999999, NowB, NowC}; % almost infinity
+                     is_integer(Timeout) ->
+                          {NowA, NowB, NowC + (Timeout * 1000)}
+                  end,
     %% Get the bucket n_val for use in creating a coverage plan
     BucketProps = riak_core_bucket:get_bucket(Bucket),
     NVal = proplists:get_value(n_val, BucketProps),
     %% Construct the key listing request
     Req = ?KV_LISTKEYS_REQ{bucket=Bucket,
                            item_filter=ItemFilter},
+    %% Fetch current queue len: may be non-zero before we start anything here
+    Len = client_queue_len(ClientPid),
+    MaxMsgs = app_helper:get_env(riak_kv, fold_buffer_max_msgs, 500) + Len,
     {Req, all, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout,
-     #state{client_type=ClientType, from=From}}.
+     #state{client_type=ClientType,
+            from=From,
+            timeout_time=TimeoutTime,
+            max_msgs=MaxMsgs}}.
 
 process_results({Bucket, Keys},
                 StateData=#state{client_type=ClientType,
-                                 from={raw, ReqId, ClientPid}}) ->
+                                 from={raw, ReqId, ClientPid},
+                                 timeout_time=TOT,
+                                 max_msgs=MaxMsgs}) ->
     process_keys(ClientType, Bucket, Keys, ReqId, ClientPid),
-    {ok, StateData};
+    XXX = client_queue_len(ClientPid),
+    if XXX > MaxMsgs ->
+            sleep_and_recheck_client(10, TOT, ClientPid, MaxMsgs, StateData);
+       true ->
+            {ok, StateData}
+    end;
 process_results(done, StateData) ->
     {done, StateData};
 process_results({error, Reason}, _State) ->
@@ -117,4 +138,28 @@ process_keys(mapred, Bucket, Keys, _ReqId, ClientPid) ->
         luke_flow:add_inputs(ClientPid, [{Bucket, Key} || Key <- Keys])
     catch _:_ ->
             exit(self(), normal)
+    end.
+
+client_queue_len(ClientPid) ->
+    {_, Len} = rpc:call(node(ClientPid),
+                        erlang, process_info, [ClientPid, message_queue_len]),
+    Len.
+
+sleep_and_recheck_client(Delay, TOT, ClientPid, MaxMsgs, StateData) ->
+    case timer:now_diff(now(), TOT) of
+        Diff when Diff > 0 ->
+            {error, timeout};                   % Absolute wall clock timeout
+        _ ->
+            io:format("KeysFSM ~p/~p,", [Delay, element(2, process_info(self(), message_queue_len))]),
+            timer:sleep(Delay),
+            case client_queue_len(ClientPid) of
+                N when N > MaxMsgs ->
+                    NewDelay = if Delay > 125 -> 250;
+                                  true        -> Delay * 2
+                               end,
+                    sleep_and_recheck_client(NewDelay, TOT, ClientPid, MaxMsgs,
+                                             StateData);
+                _ ->
+                    {ok, StateData}
+            end
     end.

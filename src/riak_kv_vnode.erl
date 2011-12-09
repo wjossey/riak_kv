@@ -266,7 +266,7 @@ handle_command(?KV_MGET_REQ{bkeys=BKeys, req_id=ReqId, from=From}, _Sender, Stat
 handle_command(#riak_kv_listkeys_req_v1{bucket=Bucket, req_id=ReqId}, _Sender,
                State=#state{mod=Mod, modstate=ModState, idx=Idx}) ->
     do_legacy_list_bucket(ReqId,Bucket,Mod,ModState,Idx,State);
-handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
+handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, Sender,
                State=#state{async_backend=AsyncBackend,
                             key_buf_size=BufferSize,
                             mod=Mod,
@@ -308,7 +308,7 @@ handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Calle
             FoldFun = fold_fun(keys, BufferMod, Filter),
             ModFun = fold_keys
     end,
-    Buffer = BufferMod:new(BufferSize, BufferFun),
+    Buffer = BufferMod:new(BufferSize, Sender, BufferFun),
     FinishFun =
         fun(Buffer1) ->
                 riak_kv_fold_buffer:flush(Buffer1),
@@ -384,7 +384,7 @@ handle_coverage(?KV_LISTBUCKETS_REQ{item_filter=ItemFilter},
     %% Construct the filter function
     Filter = riak_kv_coverage_filter:build_filter(all, ItemFilter, undefined),
     BufferMod = riak_kv_fold_buffer,
-    Buffer = BufferMod:new(BufferSize, result_fun(Sender)),
+    Buffer = BufferMod:new(BufferSize, Sender, result_fun(Sender)),
     FoldFun = fold_fun(buckets, BufferMod, Filter),
     FinishFun = finish_fun(BufferMod, Sender),
     case AsyncBackend of
@@ -412,7 +412,7 @@ handle_coverage(?KV_LISTKEYS_REQ{bucket=Bucket,
     FilterVNode = proplists:get_value(Index, FilterVNodes),
     Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
     BufferMod = riak_kv_fold_buffer,
-    Buffer = BufferMod:new(BufferSize, result_fun(Bucket, Sender)),
+    Buffer = BufferMod:new(BufferSize, Sender, result_fun(Bucket, Sender)),
     FoldFun = fold_fun(keys, BufferMod, Filter),
     FinishFun = finish_fun(BufferMod, Sender),
     case AsyncBackend of
@@ -444,7 +444,7 @@ handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
             FilterVNode = proplists:get_value(Index, FilterVNodes),
             Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
             BufferMod = riak_kv_fold_buffer,
-            Buffer = BufferMod:new(BufferSize, result_fun(Bucket, Sender)),
+            Buffer = BufferMod:new(BufferSize, Sender, result_fun(Bucket, Sender)),
             FoldFun = fold_fun(keys, BufferMod, Filter),
             FinishFun = finish_fun(BufferMod, Sender),
             case AsyncBackend of
@@ -799,8 +799,8 @@ list(FoldFun, FinishFun, Mod, ModFun, ModState, Opts, Buffer) ->
     case Mod:ModFun(FoldFun, Buffer, Opts, ModState) of
         {ok, Acc} ->
             FinishFun(Acc);
-        {async, AsyncWork} ->
-            {async, AsyncWork}
+        {async, _AsyncWork} = AsyncReply ->
+            AsyncReply
     end.
 
 %% @private

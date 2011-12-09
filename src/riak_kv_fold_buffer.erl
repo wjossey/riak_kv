@@ -29,7 +29,7 @@
 -author('Kelly McLaughlin <kelly@basho.com>').
 
 %% Public API
--export([new/2,
+-export([new/3,
          add/2,
          flush/1,
          size/1]).
@@ -42,7 +42,9 @@
 
 -record(buffer, {acc=[] :: [any()],
                  buffer_fun :: function(),
+                 max_msgs :: pos_integer(),
                  max_size :: pos_integer(),
+                 sender_pid :: pid(),
                  size=0 :: non_neg_integer()}).
 -type buffer() :: #buffer{}.
 
@@ -52,10 +54,13 @@
 
 %% @doc Returns a new buffer with the specified
 %% maximum size and buffer function.
--spec new(pos_integer(), fun(([any()]) -> any())) -> buffer().
-new(MaxSize, Fun) ->
+-spec new(pos_integer(), {any(), any(), pid()}, fun(([any()]) -> any())) -> buffer().
+new(MaxSize, {_, _, SenderPid}, Fun) ->
+    MaxMsgs = app_helper:get_env(riak_kv, fold_buffer_max_msgs, 500),
     #buffer{buffer_fun=Fun,
-            max_size=MaxSize-1}.
+            max_msgs=MaxMsgs,
+            max_size=MaxSize-1,
+            sender_pid=SenderPid}.
 
 %% @doc Add an item to the buffer. If the
 %% size of the buffer is equal to the
@@ -66,11 +71,19 @@ new(MaxSize, Fun) ->
 -spec add(any(), buffer()) -> buffer().
 add(Item, #buffer{acc=Acc,
                   buffer_fun=Fun,
+                  max_msgs=MaxMsgs,
                   max_size=MaxSize,
+                  sender_pid=SenderPid,
                   size=MaxSize}=Buffer) ->
     Fun([Item | Acc]),
-    Buffer#buffer{acc=[],
-                  size=0};
+    NewBuffer = Buffer#buffer{acc=[],
+                              size=0},
+    QLen = client_queue_len(SenderPid),
+    if QLen > MaxMsgs ->
+            sleep_and_recheck_client(10, SenderPid, MaxMsgs, NewBuffer);
+       true ->
+            NewBuffer
+    end;
 add(Item, #buffer{acc=Acc,
                   size=Size}=Buffer) ->
     Buffer#buffer{acc=[Item | Acc],
@@ -89,6 +102,25 @@ flush(#buffer{acc=Acc,
 -spec size(buffer()) -> non_neg_integer().
 size(#buffer{size=Size}) ->
     Size.
+
+client_queue_len(SenderPid) ->
+    {_, Len} = rpc:call(node(SenderPid),
+                        erlang, process_info, [SenderPid, message_queue_len]),
+    Len.
+
+sleep_and_recheck_client(Delay, SenderPid, MaxMsgs, NewBuffer) ->
+    io:format("fold delay ~p ~p,", [self(), Delay]), %SLF
+    timer:sleep(Delay),
+    case client_queue_len(SenderPid) of
+        N when N > MaxMsgs ->
+            NewDelay = if Delay > 125 -> 250;
+                          true        -> Delay * 2
+                       end,
+            sleep_and_recheck_client(NewDelay, SenderPid, MaxMsgs,
+                                     NewBuffer);
+        _ ->
+            NewBuffer
+    end.
 
 %% ===================================================================
 %% EUnit tests
