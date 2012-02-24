@@ -44,6 +44,7 @@
              riak_kv_mapred_term,
              riak_kv_mapreduce,
              riak_kv_multi_backend,
+             riak_kv_yessir_backend,
              riak_kv_pb_listener,
              riak_kv_pb_socket,
              riak_kv_pb_socket_sup,
@@ -79,6 +80,9 @@
   {registered, []},
   {mod, {riak_kv_app, []}},
   {env, [
+         %% Yes, sir!
+         {yessir_backend_default_size, 1024},
+
          %% Endpoint for system stats HTTP provider
          {stats_urlpath, "stats"},
 
