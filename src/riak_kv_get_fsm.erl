@@ -2,7 +2,7 @@
 %%
 %% riak_get_fsm: coordination of Riak GET requests
 %%
-%% Copyright (c) 2007-2010 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2007-2012 Basho Technologies, Inc.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -44,6 +44,7 @@
                   {timeout, pos_integer() | infinity} | %% Timeout for vnode responses
                   {details, details()} |       %% Return extra details as a 3rd element
                   {details, true} |
+                  {random_p_n, pos_integer()} | %% Random N primary vnodes
                   details.
 
 -type options() :: [option()].
@@ -145,13 +146,24 @@ init({test, Args, StateProps}) ->
     {ok, validate, TestStateData, 0}.
 
 %% @private
-prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key}}) ->
+prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
+                                  options = Options}) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     BucketProps = riak_core_bucket:get_bucket(Bucket, Ring),
     DocIdx = riak_core_util:chash_key(BKey),
-    N = proplists:get_value(n_val,BucketProps),
     UpNodes = riak_core_node_watcher:nodes(riak_kv),
-    Preflist2 = riak_core_apl:get_apl_ann(DocIdx, N, Ring, UpNodes),
+    case get_option(random_p_n, Options, false) of
+        RandomPN when is_integer(RandomPN), RandomPN > 0 ->
+            BucketN = proplists:get_value(n_val,BucketProps),
+            Ps = riak_core_apl:get_apl_ann(DocIdx, BucketN, Ring, UpNodes),
+            Ps2 = [P || P = {_,primary} <- Ps],
+            random:seed(now()),
+            N = RandomPN,
+            Preflist2 = choose_random_pn_list(Ps2, N);
+        false ->
+            N = proplists:get_value(n_val,BucketProps),
+            Preflist2 = riak_core_apl:get_apl_ann(DocIdx, N, Ring, UpNodes)
+    end,
     {next_state, validate, StateData#state{starttime=riak_core_util:moment(),
                                           n = N,
                                           bucket_props=BucketProps,
@@ -182,6 +194,9 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
             {stop, normal, StateData};
         PR > NumPrimaries ->
             client_reply({error, {pr_val_unsatisfied, PR, NumPrimaries}}, StateData),
+            {stop, normal, StateData};
+        R > NumVnodes ->
+            client_reply({error, {insufficient_vnodes, NumVnodes, need, R}}, StateData),
             {stop, normal, StateData};
         R > NumVnodes ->
             client_reply({error, {insufficient_vnodes, NumVnodes, need, R}}, StateData),
@@ -379,7 +394,23 @@ details() ->
     [timing,
      vnodes].
 
+choose_random_pn_list(_L, 0) ->
+    [];
+choose_random_pn_list([_|_] = L, N) ->
+    Winner = lists:nth(random:uniform(length(L)), L),
+    [Winner|choose_random_pn_list(lists:delete(Winner, L), N-1)];
+choose_random_pn_list([], _N) ->
+    [].
+
 -ifdef(TEST).
+
+choose_random_pn_list_test() ->
+    L1 = [a, b, c],
+    %% 2K iterations runs in about 5.2 milliseconds on my laptop.
+    L2 = lists:usort(lists:flatten([choose_random_pn_list(L1, 1) ||
+                                       _ <- lists:seq(1, 2000)])),
+    ?assertEqual(L1, L2).
+
 -define(expect_msg(Exp,Timeout), 
         ?assertEqual(Exp, receive Exp -> Exp after Timeout -> timeout end)).
 
