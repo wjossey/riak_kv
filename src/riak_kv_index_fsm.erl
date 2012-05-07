@@ -40,6 +40,7 @@
 -include_lib("riak_kv_vnode.hrl").
 
 -export([init/2,
+         plan/2,
          process_results/2,
          finish/2]).
 
@@ -47,6 +48,7 @@
 -type req_id() :: non_neg_integer().
 
 -record(state, {client_type :: plain | mapred,
+                merge_sort_buffer :: term(),
                 from :: from()}).
 
 %% @doc Return a tuple containing the ModFun to call per vnode,
@@ -71,13 +73,29 @@ init(From={_, _, ClientPid}, [Bucket, ItemFilter, Query, Timeout, ClientType]) -
     {Req, all, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout,
      #state{client_type=ClientType, from=From}}.
 
+plan(CoverageVnodes, State) ->
+    State2 = State#state{merge_sort_buffer=sms:new(CoverageVnodes)},
+    {ok, State2}.
+
 process_results({error, Reason}, _State) ->
     {error, Reason};
-process_results({Bucket, Results},
-                StateData=#state{client_type=ClientType,
+process_results({Vnode, {_Bucket, Results}},
+                StateData=#state{client_type=_ClientType,
+                                 merge_sort_buffer=MergeSortBuffer,
                                  from={raw, ReqId, ClientPid}}) ->
-    process_query_results(ClientType, Bucket, Results, ReqId, ClientPid),
-    {ok, StateData};
+    %% TODO: this isn't compatible with mapreduce
+
+    %% add new results to buffer
+    BufferWithNewResults = sms:add_results(Vnode, Results, MergeSortBuffer),
+    ProcessBuffer = sms:sms(BufferWithNewResults),
+    NewBuffer = case ProcessBuffer of
+        {[], BufferWithNewResults} ->
+            BufferWithNewResults;
+        {ToSend, NewBuff} ->
+            ClientPid ! {ReqId, {results, ToSend}},
+            NewBuff
+    end,
+    {ok, StateData#state{merge_sort_buffer=NewBuffer}};
 process_results(done, StateData) ->
     {done, StateData}.
 
@@ -98,24 +116,14 @@ finish({error, Error},
     {stop, normal, StateData};
 finish(clean,
        StateData=#state{from={raw, ReqId, ClientPid},
+                        merge_sort_buffer=MergeSortBuffer,
                         client_type=ClientType}) ->
     case ClientType of
         mapred ->
             luke_flow:finish_inputs(ClientPid);
         plain ->
+            LastResults = sms:done(MergeSortBuffer),
+            ClientPid ! {ReqId, {results, LastResults}},
             ClientPid ! {ReqId, done}
     end,
     {stop, normal, StateData}.
-
-%% ===================================================================
-%% Internal functions
-%% ===================================================================
-
-process_query_results(plain, _Bucket, Results, ReqId, ClientPid) ->
-    ClientPid ! {ReqId, {results, Results}};
-process_query_results(mapred, Bucket, Results, _ReqId, ClientPid) ->
-    try
-        luke_flow:add_inputs(ClientPid, [{Bucket, Result} || Result <- Results])
-    catch _:_ ->
-            exit(self(), normal)
-    end.
