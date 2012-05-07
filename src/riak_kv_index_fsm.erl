@@ -96,7 +96,7 @@ process_results({Vnode, {_Bucket, Results}},
             NewBuff
     end,
     {ok, StateData#state{merge_sort_buffer=NewBuffer}};
-process_results(done, StateData) ->
+process_results({_VnodeID, done}, StateData) ->
     {done, StateData}.
 
 finish({error, Error},
