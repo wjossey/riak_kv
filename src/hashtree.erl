@@ -15,7 +15,8 @@
 -define(MEM_LEVELS, 4).
 -define(ROOT, "/tmp/anti/level").
 
--record(state, {levels,
+-record(state, {id,
+                levels,
                 tree,
                 ref,
                 path,
@@ -26,12 +27,27 @@
 %%%===================================================================
 
 new() ->
+    new(0).
+
+new(TreeId) ->
+    State = new_segment_store(#state{}),
+    new(TreeId, State).
+
+new(TreeId, LinkedStore) ->
+    if is_integer(TreeId) andalso
+       (TreeId >= 0) andalso
+       (TreeId < ((1 bsl 160)-1)) ->
+            ok;
+       true ->
+            erlang:error(badarg)
+    end,
     NumLevels = erlang:trunc(math:log(?NUM_SEGMENTS) / math:log(?WIDTH)) + 1,
-    State = #state{levels=NumLevels,
+    State = #state{id=TreeId,
+                   levels=NumLevels,
                    %% dirty_segments=gb_sets:new(),
                    dirty_segments=bitarray_new(?NUM_SEGMENTS),
                    tree=dict:new()},
-    State2 = new_segment_store(State),
+    State2 = share_segment_store(State, LinkedStore),
     State2.
 
 destroy(State) ->
@@ -41,7 +57,7 @@ destroy(State) ->
 insert(Key, ObjHash, State) ->
     Hash = erlang:phash2(Key),
     Segment = Hash rem ?NUM_SEGMENTS,
-    HKey = encode(Segment, Key),
+    HKey = encode(State#state.id, Segment, Key),
     ok = eleveldb:put(State#state.ref, HKey, ObjHash, []),
     %% Dirty = gb_sets:add_element(Segment, State#state.dirty_segments),
     Dirty = bitarray_set(Segment, State#state.dirty_segments),
@@ -57,7 +73,7 @@ update_tree(State=#state{dirty_segments=Dirty}) ->
 update_tree([], State) ->
     State;
 update_tree(Segments, State) ->
-    Hashes = orddict:from_list(hashes(State#state.ref, Segments)),
+    Hashes = orddict:from_list(hashes(State, Segments)),
     Groups = group(Hashes),
     LastLevel = State#state.levels,
     NewState = update_levels(LastLevel, Groups, State),
@@ -70,7 +86,7 @@ local_compare(T1, T2) ->
     Remote = fun(get_bucket, {L, B}) ->
                      get_bucket(L, B, T2);
                 (key_hashes, Segment) ->
-                     [{_, KeyHashes2}] = key_hashes(T2#state.ref, Segment),
+                     [{_, KeyHashes2}] = key_hashes(T2, Segment),
                      KeyHashes2
              end,
     compare(T1, Remote).
@@ -83,11 +99,16 @@ compare(Tree, Remote) ->
 %%%===================================================================
 
 new_segment_store(State) ->
+    Options = [{create_if_missing, true},
+               {max_open_files, 20}],
     <<P:128/integer>> = crypto:md5(term_to_binary(erlang:now())),
     DataDir = filename:join(?ROOT, integer_to_list(P)),
     filelib:ensure_dir(DataDir),
-    {ok, Ref} = eleveldb:open(DataDir, [{create_if_missing, true}]),
+    {ok, Ref} = eleveldb:open(DataDir, Options),
     State#state{ref=Ref, path=DataDir}.
+
+share_segment_store(State, #state{ref=Ref, path=Path}) ->
+    State#state{ref=Ref, path=Path}.
 
 hash(X) ->
     %% erlang:phash2(X).
@@ -153,8 +174,8 @@ set_memory_bucket(Level, Bucket, Val, State) ->
     Tree = dict:store({Level, Bucket}, Val, State#state.tree),
     State#state{tree=Tree}.
 
-get_disk_bucket(Level, Bucket, #state{ref=Ref}) ->
-    HKey = encode_bucket(Level, Bucket),
+get_disk_bucket(Level, Bucket, #state{id=Id, ref=Ref}) ->
+    HKey = encode_bucket(Id, Level, Bucket),
     case eleveldb:get(Ref, HKey, []) of
         {ok, Bin} ->
             binary_to_term(Bin);
@@ -162,67 +183,67 @@ get_disk_bucket(Level, Bucket, #state{ref=Ref}) ->
             orddict:new()
     end.
 
-set_disk_bucket(Level, Bucket, Val, State=#state{ref=Ref}) ->
-    HKey = encode_bucket(Level, Bucket),
+set_disk_bucket(Level, Bucket, Val, State=#state{id=Id, ref=Ref}) ->
+    HKey = encode_bucket(Id, Level, Bucket),
     Bin = term_to_binary(Val),
     eleveldb:put(Ref, HKey, Bin, []),
     State.
 
-encode(Segment, Key) ->
-    <<$s,Segment:64/integer,42,Key/binary>>.
+encode(TreeId, Segment, Key) ->
+    <<TreeId:160/integer,$s,Segment:64/integer,Key/binary>>.
 
 decode(Bin) ->
-    <<$s,Segment:64/integer,42,Key/binary>> = Bin,
-    {Segment, Key}.
+    <<TreeId:160/integer,$s,Segment:64/integer,Key/binary>> = Bin,
+    {TreeId, Segment, Key}.
 
-encode_bucket(Level, Bucket) ->
-    <<$b,Level:64/integer,Bucket:64/integer>>.
+encode_bucket(TreeId, Level, Bucket) ->
+    <<TreeId:160/integer,$b,Level:64/integer,Bucket:64/integer>>.
 
-select_segment(Ref, Segment) ->
-    try
-        eleveldb:fold(Ref,
-                      fun({K, V}, Acc) ->
-                              {Seg, _} = decode(K),
-                              (Seg == Segment) orelse throw({break, Acc}),
-                              [{K, V} | Acc]
-                      end,
-                      [],
-                      [{first_key, encode(Segment,<<>>)}])
-    catch
-        {break, AccFinal} ->
-            AccFinal
-    end.
+%% select_segment(Ref, Segment) ->
+%%     try
+%%         eleveldb:fold(Ref,
+%%                       fun({K, V}, Acc) ->
+%%                               {Seg, _} = decode(K),
+%%                               (Seg == Segment) orelse throw({break, Acc}),
+%%                               [{K, V} | Acc]
+%%                       end,
+%%                       [],
+%%                       [{first_key, encode(Segment,<<>>)}])
+%%     catch
+%%         {break, AccFinal} ->
+%%             AccFinal
+%%     end.
 
-hashes(Ref, Segments) ->
-    multi_select_segment(Ref, Segments, fun hash/1).
+hashes(State, Segments) ->
+    multi_select_segment(State, Segments, fun hash/1).
 
-key_hashes(Ref, Segment) ->
-    multi_select_segment(Ref, [Segment], fun(X) -> X end).
+key_hashes(State, Segment) ->
+    multi_select_segment(State, [Segment], fun(X) -> X end).
 
-multi_select_segment(Ref, Segments, F) ->
-    multi_select_segment(Ref, Segments, F, []).
+multi_select_segment(State, Segments, F) ->
+    multi_select_segment(State, Segments, F, []).
 
-multi_select_segment(Ref, Segments, F, Acc) ->
+multi_select_segment(State=#state{id=Id, ref=Ref}, Segments, F, Acc) ->
     [First | Rest] = Segments,
     try
-        {_, LastSegment, _, _, LastAcc, FA} =
-            eleveldb:fold(Ref, fun iterate/2, {Ref, First, Rest, F, [], Acc},
-                          [{first_key, encode(First, <<>>)}]),
+        {_, _, LastSegment, _, _, LastAcc, FA} =
+            eleveldb:fold(Ref, fun iterate/2, {Ref, Id, First, Rest, F, [], Acc},
+                          [{first_key, encode(Id, First, <<>>)}]),
         [{LastSegment, F(LastAcc)} | FA]
     catch
         {break, [], FinalAcc} ->
             FinalAcc;
         {break, Remaining, FinalAcc} ->
-            multi_select_segment(Ref, Remaining, F, FinalAcc)
+            multi_select_segment(State, Remaining, F, FinalAcc)
     end.
 
-iterate({K, V}, {Ref, Segment, Segments, F, Acc, FinalAcc}) ->
-    {Seg, _} = decode(K),
-    case {Seg, Segments} of
-        {Segment, _} ->
-            {Ref, Segment, Segments, F, [{K,V} | Acc], FinalAcc};
-        {_, [Seg|Remaining]} ->
-            {Ref, Seg, Remaining, F, [{K,V}], [{Segment, F(Acc)} | FinalAcc]};
+iterate({K, V}, {Ref, Id, Segment, Segments, F, Acc, FinalAcc}) ->
+    {SegId, Seg, _} = decode(K),
+    case {SegId, Seg, Segments} of
+        {Id, Segment, _} ->
+            {Ref, Id, Segment, Segments, F, [{K,V} | Acc], FinalAcc};
+        {Id, _, [Seg|Remaining]} ->
+            {Ref, Id, Seg, Remaining, F, [{K,V}], [{Segment, F(Acc)} | FinalAcc]};
         _ ->
             throw({break, Segments, [{Segment, F(Acc)} | FinalAcc]})
     end.
@@ -243,21 +264,21 @@ compare(Level, Bucket, Tree, Remote, KeyAcc) ->
                     end, KeyAcc, Diff),
     KeyAcc3.
 
-compare_segments(Segment, Tree, Remote) ->
-    [{_, KeyHashes1}] = key_hashes(Tree#state.ref, Segment),
+compare_segments(Segment, Tree=#state{id=Id}, Remote) ->
+    [{_, KeyHashes1}] = key_hashes(Tree, Segment),
     KeyHashes2 = Remote(key_hashes, Segment),
     HL1 = orddict:from_list(KeyHashes1),
     HL2 = orddict:from_list(KeyHashes2),
     Delta = orddict_delta(HL1, HL2),
     Keys =
         orddict:fold(fun(KBin, {'$none', _}, Acc) ->
-                             {_, Key} = decode(KBin),
+                             {Id, Segment, Key} = decode(KBin),
                              [{missing, Key} | Acc];
                         (KBin, {_, '$none'}, Acc) ->
-                             {_, Key} = decode(KBin),
+                             {Id, Segment, Key} = decode(KBin),
                              [{remote_missing, Key} | Acc];
                         (KBin, _, Acc) ->
-                             {_, Key} = decode(KBin),
+                             {Id, Segment, Key} = decode(KBin),
                              [{different, Key} | Acc]
                      end, [], Delta),
     Keys.
@@ -438,7 +459,7 @@ message_loop(Tree, Msgs, Bytes) ->
             Size = byte_size(term_to_binary(Reply)),
             message_loop(Tree, Msgs+1, Bytes+Size);
         {key_hashes, From, Segment} ->
-            [{_, KeyHashes2}] = key_hashes(Tree#state.ref, Segment),
+            [{_, KeyHashes2}] = key_hashes(Tree, Segment),
             Reply = KeyHashes2,
             From ! {remote, Reply},
             Size = byte_size(term_to_binary(Reply)),
@@ -513,39 +534,44 @@ prop_correct() ->
                                              end, Tree, Vals)
                          end,
 
-                A1 = new(),
-                B1 = new(),
+                A0 = new(),
+                B0 = new(),
 
-                A2 = Insert(A1, Same),
-                A3 = Insert(A2, LocalOnly),
-                A4 = Insert(A3, Different),
+                [begin
+                  A1 = new(Id, A0),
+                  B1 = new(Id, B0),
 
-                B2 = Insert(B1, Same),
-                B3 = Insert(B2, RemoteOnly),
-                B4 = Insert(B3, Different2),
+                  A2 = Insert(A1, Same),
+                  A3 = Insert(A2, LocalOnly),
+                  A4 = Insert(A3, Different),
 
-                A5 = update_tree(A4),
-                B5 = update_tree(B4),
+                  B2 = Insert(B1, Same),
+                  B3 = Insert(B2, RemoteOnly),
+                  B4 = Insert(B3, Different2),
 
-                Expected =
-                    [{missing, Key}        || {Key, _} <- RemoteOnly] ++
-                    [{remote_missing, Key} || {Key, _} <- LocalOnly] ++
-                    [{different, Key}      || {Key, _} <- Different],
+                  A5 = update_tree(A4),
+                  B5 = update_tree(B4),
 
-                KeyDiff = local_compare(A5, B5),
+                  Expected =
+                      [{missing, Key}        || {Key, _} <- RemoteOnly] ++
+                      [{remote_missing, Key} || {Key, _} <- LocalOnly] ++
+                      [{different, Key}      || {Key, _} <- Different],
+
+                  KeyDiff = local_compare(A5, B5),
                 
-                ?assertEqual(lists:usort(Expected),
-                             lists:usort(KeyDiff)),
+                  ?assertEqual(lists:usort(Expected),
+                               lists:usort(KeyDiff)),
 
-                %% Reconcile trees
-                A6 = Insert(A5, RemoteOnly),
-                B6 = Insert(B5, LocalOnly),
-                B7 = Insert(B6, Different),
-                A7 = update_tree(A6),
-                B8 = update_tree(B7),
-                ?assertEqual([], local_compare(A7, B8)),
-
-                destroy(A5),
-                destroy(B5),
+                  %% Reconcile trees
+                  A6 = Insert(A5, RemoteOnly),
+                  B6 = Insert(B5, LocalOnly),
+                  B7 = Insert(B6, Different),
+                  A7 = update_tree(A6),
+                  B8 = update_tree(B7),
+                  ?assertEqual([], local_compare(A7, B8)),
+                  true
+                 end || Id <- lists:seq(0, 10)],
+                destroy(A0),
+                destroy(B0),
                 true
             end)).
