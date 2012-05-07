@@ -83,7 +83,8 @@
                 index_buf_size :: pos_integer(),
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
-                in_handoff = false :: boolean() }).
+                in_handoff = false :: boolean(),
+                hashtrees :: pid() }).
 
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
@@ -100,6 +101,52 @@
                   prunetime :: undefined| non_neg_integer(),
                   is_index=false :: boolean() %% set if the b/end supports indexes
                  }).
+
+-compile(export_all).
+
+do_exchange(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    IndexBin = <<Index:160/integer>>,
+    PL = riak_core_ring:preflist(IndexBin, Ring),
+    LocalVN = {Index, node()},
+    RemoteVN = hd(PL),
+    exchange_fsm:start_link(LocalVN, RemoteVN, Index),
+    ok.
+
+responsible_indices(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Buckets = riak_core_ring:get_buckets(Ring),
+    BucketProps = [riak_core_bucket:get_bucket(Bucket, Ring) || Bucket <- Buckets],
+    Default = app_helper:get_env(riak_core, default_bucket_props),
+    MaxN0 = proplists:get_value(n_val, Default),
+    MaxN = lists:foldl(fun(Props, MaxN) ->
+                               N = proplists:get_value(n_val, Props),
+                               erlang:max(N, MaxN)
+                       end, MaxN0, BucketProps),
+    responsible_indices(Index, MaxN, Ring).
+
+responsible_indices(Index, N, Ring) ->
+    IndexBin = <<Index:160/integer>>,
+    PL = riak_core_ring:preflist(IndexBin, Ring),
+    Indices = [Idx || {Idx, _} <- PL],
+    RevIndices = lists:reverse(Indices),
+    {Succ, _} = lists:split(N-1, Indices),
+    {Pred, _} = lists:split(N, RevIndices),
+    lists:reverse(Pred) ++ Succ.
+
+maybe_rebuild_hashtrees(State=#state{idx=Index}) ->
+    %% TODO: Don't build if not primary
+    Indices = responsible_indices(Index),
+    %% Indices = [Index],
+    {ok, Trees} = index_hashtree:start_link(Index),
+    [index_hashtree:new_tree(Idx, Trees) || Idx <- Indices],
+    index_hashtree:build(Trees),
+    State#state{hashtrees=Trees}.
+    %% Trees = [{Idx, index_hashtree:start_link()} || Idx <- Indices],
+    %% Trees2 = orddict:from_list(Trees),
+    %% State#state{hashtrees=Trees2}.
+    %% _A = Index,
+    %% State#state{hashtrees=[]}.
 
 %% API
 start_vnode(I) ->
@@ -257,7 +304,8 @@ init([Index]) ->
                 true ->
                     %% Create worker pool initialization tuple
                     FoldWorkerPool = {pool, riak_kv_worker, 10, []},
-                    {ok, State, [FoldWorkerPool]};
+                    State2 = maybe_rebuild_hashtrees(State),
+                    {ok, State2, [FoldWorkerPool]};
                 false ->
                     {ok, State}
             end;
@@ -363,6 +411,29 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
                           FoldFun({Bucket, Key}, Value, Acc)
                   end,
     do_fold(FoldWrapper, Acc0, Sender, State);
+
+%% exchange commands
+handle_command({update_tree, Index}, _Sender, State) ->
+    index_hashtree:update(Index, State#state.hashtrees),
+    Reply = {tree_built, State#state.idx, Index},
+    {reply, Reply, State};
+
+handle_command({exchange_bucket, Index, Level, Bucket}, _Sender, State) ->
+    Result = index_hashtree:exchange_bucket(Index, Level, Bucket, State#state.hashtrees),
+    %% Reply = {bucket, State#state.idx, Index, Result},
+    %% {reply, Reply, State};
+    {reply, Result, State};
+
+handle_command({exchange_segment, Index, Segment}, _Sender, State) ->
+    Result = index_hashtree:exchange_segment(Index, Segment, State#state.hashtrees),
+    %% Reply = {segment, State#state.idx, Index, Result},
+    %% {reply, Reply, State};
+    {reply, Result, State};
+
+handle_command({compare_trees, Index, Remote}, _Sender, State) ->
+    Result = index_hashtree:compare(Index, Remote, State#state.hashtrees),
+    Reply = {keydiff, State#state.idx, Index, Result},
+    {reply, Reply, State};
 
 %% Commands originating from inside this vnode
 handle_command({backend_callback, Ref, Msg}, _Sender,
