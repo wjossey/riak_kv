@@ -48,6 +48,8 @@
 -type req_id() :: non_neg_integer().
 
 -record(state, {client_type :: plain | mapred,
+                max_results :: pos_integer(),
+                results_so_far=0,
                 merge_sort_buffer :: term(),
                 from :: from()}).
 
@@ -82,6 +84,7 @@ process_results({error, Reason}, _State) ->
 process_results({Vnode, {_Bucket, Results}},
                 StateData=#state{client_type=_ClientType,
                                  merge_sort_buffer=MergeSortBuffer,
+                                 results_so_far=ResultsSoFar,
                                  from={raw, ReqId, ClientPid}}) ->
     %% TODO: this isn't compatible with mapreduce
 
@@ -89,17 +92,17 @@ process_results({Vnode, {_Bucket, Results}},
 
     %% add new results to buffer
     BufferWithNewResults = sms:add_results(Vnode, ReversedResults, MergeSortBuffer),
-    lager:debug("Got results from vnode: ~p ~p", [Vnode, ReversedResults]),
     ProcessBuffer = sms:sms(BufferWithNewResults),
     NewBuffer = case ProcessBuffer of
         {[], BufferWithNewResults} ->
             BufferWithNewResults;
         {ToSend, NewBuff} ->
-            lager:debug("sending before merging ~p", [ToSend]),
             ClientPid ! {ReqId, {results, ToSend}},
             NewBuff
     end,
-    {ok, StateData#state{merge_sort_buffer=NewBuffer}};
+    LengthSent = length(element(1, ProcessBuffer)),
+    {ok, StateData#state{merge_sort_buffer=NewBuffer,
+                         results_so_far=ResultsSoFar + LengthSent}};
 process_results({_VnodeID, done}, StateData) ->
     {done, StateData}.
 
@@ -120,6 +123,7 @@ finish({error, Error},
     {stop, normal, StateData};
 finish(clean,
        StateData=#state{from={raw, ReqId, ClientPid},
+                        results_so_far=ResultsSoFar,
                         merge_sort_buffer=MergeSortBuffer,
                         client_type=ClientType}) ->
     case ClientType of
@@ -127,7 +131,8 @@ finish(clean,
             luke_flow:finish_inputs(ClientPid);
         plain ->
             LastResults = sms:done(MergeSortBuffer),
-            lager:debug("Sending last results: ~p", [LastResults]),
+            lager:debug("Sent ~p results total", 
+                [ResultsSoFar + length(LastResults)]),
             ClientPid ! {ReqId, {results, LastResults}},
             ClientPid ! {ReqId, done}
     end,
