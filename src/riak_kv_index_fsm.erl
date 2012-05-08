@@ -48,7 +48,7 @@
 -type req_id() :: non_neg_integer().
 
 -record(state, {client_type :: plain | mapred,
-                max_results :: pos_integer(),
+                max_results=100,
                 results_so_far=0,
                 merge_sort_buffer :: term(),
                 from :: from()}).
@@ -81,9 +81,14 @@ plan(CoverageVnodes, State) ->
 
 process_results({error, Reason}, _State) ->
     {error, Reason};
+process_results({_Vnode, {_Bucket, _Results}},
+                StateData=#state{results_so_far=ResultsSoFar,
+                                 max_results=ResultsSoFar}) ->
+     {ok, StateData};
 process_results({Vnode, {_Bucket, Results}},
                 StateData=#state{client_type=_ClientType,
                                  merge_sort_buffer=MergeSortBuffer,
+                                 max_results=MaxResults,
                                  results_so_far=ResultsSoFar,
                                  from={raw, ReqId, ClientPid}}) ->
     %% TODO: this isn't compatible with mapreduce
@@ -93,14 +98,19 @@ process_results({Vnode, {_Bucket, Results}},
     %% add new results to buffer
     BufferWithNewResults = sms:add_results(Vnode, ReversedResults, MergeSortBuffer),
     ProcessBuffer = sms:sms(BufferWithNewResults),
-    NewBuffer = case ProcessBuffer of
+    {NewBuffer, LengthSent} = case ProcessBuffer of
         {[], BufferWithNewResults} ->
-            BufferWithNewResults;
+            {BufferWithNewResults, 0};
         {ToSend, NewBuff} ->
-            ClientPid ! {ReqId, {results, ToSend}},
-            NewBuff
+            DownTheWire = case (ResultsSoFar + length(ToSend)) > MaxResults of
+                true ->
+                    lists:sublist(ToSend, ((ResultsSoFar + length(ToSend)) - MaxResults));
+                false ->
+                    ToSend
+            end,
+            ClientPid ! {ReqId, {results, DownTheWire}},
+            {NewBuff, length(DownTheWire)}
     end,
-    LengthSent = length(element(1, ProcessBuffer)),
     {ok, StateData#state{merge_sort_buffer=NewBuffer,
                          results_so_far=ResultsSoFar + LengthSent}};
 process_results({_VnodeID, done}, StateData) ->
@@ -124,6 +134,7 @@ finish({error, Error},
 finish(clean,
        StateData=#state{from={raw, ReqId, ClientPid},
                         results_so_far=ResultsSoFar,
+                        max_results=MaxResults,
                         merge_sort_buffer=MergeSortBuffer,
                         client_type=ClientType}) ->
     case ClientType of
@@ -131,9 +142,15 @@ finish(clean,
             luke_flow:finish_inputs(ClientPid);
         plain ->
             LastResults = sms:done(MergeSortBuffer),
+            DownTheWire = case (ResultsSoFar + length(LastResults)) > MaxResults of
+                true ->
+                    lists:sublist(LastResults, ((ResultsSoFar + length(LastResults)) - MaxResults));
+                false ->
+                    LastResults
+            end,
             lager:debug("Sent ~p results total", 
-                [ResultsSoFar + length(LastResults)]),
-            ClientPid ! {ReqId, {results, LastResults}},
+                [ResultsSoFar + length(DownTheWire)]),
+            ClientPid ! {ReqId, {results, DownTheWire}},
             ClientPid ! {ReqId, done}
     end,
     {stop, normal, StateData}.
