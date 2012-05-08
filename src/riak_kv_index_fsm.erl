@@ -84,7 +84,8 @@ process_results({error, Reason}, _State) ->
 process_results({_Vnode, {_Bucket, _Results}},
                 StateData=#state{results_so_far=ResultsSoFar,
                                  max_results=ResultsSoFar}) ->
-     {ok, StateData};
+    lager:debug("Got more results but already sent enough down the wire"),
+    {ok, StateData};
 process_results({Vnode, {_Bucket, Results}},
                 StateData=#state{client_type=_ClientType,
                                  merge_sort_buffer=MergeSortBuffer,
@@ -112,7 +113,7 @@ process_results({Vnode, {_Bucket, Results}},
             {NewBuff, length(DownTheWire)}
     end,
     {ok, StateData#state{merge_sort_buffer=NewBuffer,
-                         results_so_far=ResultsSoFar + LengthSent}};
+                         results_so_far=(ResultsSoFar + LengthSent)}};
 process_results({_VnodeID, done}, StateData) ->
     {done, StateData}.
 
