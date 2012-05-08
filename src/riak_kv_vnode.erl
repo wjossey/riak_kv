@@ -106,23 +106,18 @@
 
 do_exchange(Index) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    IndexBin = <<Index:160/integer>>,
-    PL = riak_core_ring:preflist(IndexBin, Ring),
     LocalVN = {Index, node()},
-    RemoteVN = hd(PL),
-    %% exchange_fsm:start_link(LocalVN, RemoteVN, Index),
     RI = responsible_indices(Index),
-    RI2 = responsible_indices(element(1, RemoteVN)),
-    lager:info("RI1: ~p", [RI]),
-    lager:info("RI2: ~p", [RI2]),
-    [exchange_fsm:start_link(LocalVN, RemoteVN, I) || I <- RI],
+    Sibs = preflist_siblings(Index),
+    [begin
+         Owner = riak_core_ring:index_owner(Ring, RemoteIdx),
+         RemoteVN = {RemoteIdx, Owner},
+         [exchange_fsm:start_link(LocalVN, RemoteVN, I) || I <- RI]
+     end || RemoteIdx <- Sibs,
+            RemoteIdx /= Index],
     ok.
 
-responsible_indices(Index) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    responsible_indices(Index, Ring).
-
-responsible_indices(Index, Ring) ->
+determine_max_n(Ring) ->
     Buckets = riak_core_ring:get_buckets(Ring),
     BucketProps = [riak_core_bucket:get_bucket(Bucket, Ring) || Bucket <- Buckets],
     Default = app_helper:get_env(riak_core, default_bucket_props),
@@ -131,9 +126,33 @@ responsible_indices(Index, Ring) ->
                                N = proplists:get_value(n_val, Props),
                                erlang:max(N, MaxN)
                        end, MaxN0, BucketProps),
+    MaxN.
+
+responsible_indices(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    responsible_indices(Index, Ring).
+
+responsible_indices(Index, Ring) ->
+    MaxN = determine_max_n(Ring),
     responsible_indices(Index, MaxN, Ring).
 
 responsible_indices(Index, N, Ring) ->
+    IndexBin = <<Index:160/integer>>,
+    PL = riak_core_ring:preflist(IndexBin, Ring),
+    Indices = [Idx || {Idx, _} <- PL],
+    RevIndices = lists:reverse(Indices),
+    {Pred, _} = lists:split(N, RevIndices),
+    lists:reverse(Pred).
+
+preflist_siblings(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    preflist_siblings(Index, Ring).
+
+preflist_siblings(Index, Ring) ->
+    MaxN = determine_max_n(Ring),
+    preflist_siblings(Index, MaxN, Ring).
+
+preflist_siblings(Index, N, Ring) ->
     IndexBin = <<Index:160/integer>>,
     PL = riak_core_ring:preflist(IndexBin, Ring),
     Indices = [Idx || {Idx, _} <- PL],
