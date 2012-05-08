@@ -122,7 +122,7 @@ encodings_provided(RD, Ctx) ->
 %% @spec produce_index_results(reqdata(), context()) -> {binary(), reqdata(), context()}
 %% @doc Produce the JSON response to an index lookup.
 produce_index_results(RD, Ctx) ->
-    case wrq:get_qs_value("chunked", "false", RD) of
+    case wrq:get_qs_value("stream", "false", RD) of
         "true" ->
             handle_streaming_index_query(RD, Ctx);
         _ ->
