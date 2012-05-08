@@ -129,16 +129,27 @@ produce_index_results(RD, Ctx) ->
     Query = Ctx#ctx.index_query,
 
     %% Do the index lookup...
-    case Client:get_index(Bucket, Query) of
-        {ok, Results} ->
-            %% JSONify the results...
-            JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
-            JsonKeys2 = mochijson2:encode(JsonKeys1),
-            {JsonKeys2, RD, Ctx};
-        {error, Reason} ->
-            {{error, Reason}, RD, Ctx}
-    end.
+    {ok, ReqID} =  Client:stream_get_index(Bucket, Query),
+    StreamFun = index_stream_helper(ReqID),
+    {{stream, {<<>>, StreamFun}}, RD, Ctx}.
 
+index_stream_helper(ReqID) ->
+    fun() ->
+        receive
+            {ReqID, done} ->
+                {<<>>, done};
+            {ReqID, {results, Results}} ->
+                %% JSONify the results...
+                lager:debug("Got some results in WM: ~p", [Results]),
+                JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
+                JsonKeys2 = mochijson2:encode(JsonKeys1),
+                {JsonKeys2, index_stream_helper(ReqID)};
+            {ReqID, Error} ->
+                {error, Error}
+        after 60000 ->
+            {error, timeout}
+        end
+    end.
 
 %% @private
 %% @spec to_index_op_query(binary(), [binary()]) ->

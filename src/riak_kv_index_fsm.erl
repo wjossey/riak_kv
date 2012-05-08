@@ -85,13 +85,17 @@ process_results({Vnode, {_Bucket, Results}},
                                  from={raw, ReqId, ClientPid}}) ->
     %% TODO: this isn't compatible with mapreduce
 
+    ReversedResults = lists:reverse(Results),
+
     %% add new results to buffer
-    BufferWithNewResults = sms:add_results(Vnode, Results, MergeSortBuffer),
+    BufferWithNewResults = sms:add_results(Vnode, ReversedResults, MergeSortBuffer),
+    lager:debug("Got results from vnode: ~p ~p", [Vnode, ReversedResults]),
     ProcessBuffer = sms:sms(BufferWithNewResults),
     NewBuffer = case ProcessBuffer of
         {[], BufferWithNewResults} ->
             BufferWithNewResults;
         {ToSend, NewBuff} ->
+            lager:debug("sending before merging ~p", [ToSend]),
             ClientPid ! {ReqId, {results, ToSend}},
             NewBuff
     end,
@@ -123,6 +127,7 @@ finish(clean,
             luke_flow:finish_inputs(ClientPid);
         plain ->
             LastResults = sms:done(MergeSortBuffer),
+            lager:debug("Sending last results: ~p", [LastResults]),
             ClientPid ! {ReqId, {results, LastResults}},
             ClientPid ! {ReqId, done}
     end,
