@@ -76,8 +76,11 @@ update_trees(timeout, State=#state{local=LocalVN,
                                    Sender,
                                    riak_kv_vnode_master),
     {next_state, update_trees, State};
-update_trees(Result, State) ->
-    lager:info("R: ~p", [Result]),
+update_trees({not_responsible, VNodeIdx, Index}, State) ->
+    lager:info("VNode ~p does not cover index ~p", [VNodeIdx, Index]),
+    {stop, normal, State};
+update_trees({tree_built, _, _}, State) ->
+    %% lager:info("R: ~p", [Result]),
     Built = State#state.built + 1,
     %% {stop, normal, State}.
     case Built of
