@@ -28,20 +28,23 @@ new_tree(Id, Tree) ->
 insert(Id, Key, Hash, Tree) ->
     gen_server:cast(Tree, {insert, Id, Key, Hash}).
 
+insert_object(BKey, RObj, Tree) ->
+    gen_server:cast(Tree, {insert_object, BKey, RObj}).
+
 update(Id, Tree) ->
-    gen_server:call(Tree, {update_tree, Id}).
+    gen_server:call(Tree, {update_tree, Id}, infinity).
 
 build(Tree) ->
     gen_server:cast(Tree, build).
 
 exchange_bucket(Id, Level, Bucket, Tree) ->
-    gen_server:call(Tree, {exchange_bucket, Id, Level, Bucket}).
+    gen_server:call(Tree, {exchange_bucket, Id, Level, Bucket}, infinity).
 
 exchange_segment(Id, Segment, Tree) ->
-    gen_server:call(Tree, {exchange_segment, Id, Segment}).
+    gen_server:call(Tree, {exchange_segment, Id, Segment}, infinity).
 
 compare(Id, Remote, Tree) ->
-    gen_server:call(Tree, {compare, Id, Remote}).
+    gen_server:call(Tree, {compare, Id, Remote}, infinity).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -62,24 +65,24 @@ fold_keys(Partition, Tree) ->
     Req = ?FOLD_REQ{foldfun=fun(BKey={Bucket,Key}, RObj, _) ->
                                     ChashKey = riak_core_util:chash_key({Bucket, Key}),
                                     Idx=riak_core_ring:responsible_index(ChashKey, Ring),
-                                    case Idx of
-                                        Partition ->
-                                            insert(Idx, term_to_binary(BKey), hash_object(RObj), Tree);
-                                        _ ->
-                                            ok
-                                    end,
-                                    %% io:format("K: ~p~n", [Key]),
-                                    %% io:format("I: ~p~n", [Idx]),
+                                    insert(Idx, term_to_binary(BKey), hash_object(RObj), Tree),
                                     ok
                             end,
                     acc0=ok},
-    spawn_link(
-      fun() ->
-              riak_core_vnode_master:sync_command({Partition, node()},
-                                                  Req,
-                                                  riak_kv_vnode_master, infinity),
-              ok
-      end).
+    %% spawn_link(
+    %%   fun() ->
+    %%           riak_core_vnode_master:sync_command({Partition, node()},
+    %%                                               Req,
+    %%                                               riak_kv_vnode_master, infinity),
+    %%           ok
+    %%   end).
+    %%
+    %% Need to block for now to ensure building happens before updating/compare.
+    %% Easy to fix in the future to allow async building.
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        Req,
+                                        riak_kv_vnode_master, infinity),
+    ok.
 
 handle_call({new_tree, Id}, _From, State=#state{trees=Trees}) ->
     NewTree = case Trees of
@@ -93,60 +96,56 @@ handle_call({new_tree, Id}, _From, State=#state{trees=Trees}) ->
     {reply, ok, State2};
 handle_call({update_tree, Id}, _From, State) ->
     lager:info("Updating tree: (vnode)=~p (responsible idx)=~p", [State#state.index, Id]),
-    %% Tree = orddict:fetch(Id, Trees),
-    %% Tree2 = hashtree:update_tree(Tree),
-    %% Trees2 = orddict:store(Id, Tree2, Trees),
-    %% {reply, ok, State#state{trees=Trees2}};
-    {_, State2} = apply_tree(Id,
-                             fun(Tree) ->
-                                     {ok, hashtree:update_tree(Tree)}
-                             end,
-                             State),
-    {reply, ok, State2};
+    apply_tree(Id,
+               fun(Tree) ->
+                       {ok, hashtree:update_tree(Tree)}
+               end,
+               State);
+
 handle_call({exchange_bucket, Id, Level, Bucket}, _From, State) ->
-    {Result, State2} =
-        apply_tree(Id,
-                   fun(Tree) ->
-                           Result = hashtree:get_bucket(Level, Bucket, Tree),
-                           {Result, Tree}
-                   end,
-                   State),
-    {reply, Result, State2};
+    apply_tree(Id,
+               fun(Tree) ->
+                       Result = hashtree:get_bucket(Level, Bucket, Tree),
+                       {Result, Tree}
+               end,
+               State);
 
 handle_call({exchange_segment, Id, Segment}, _From, State) ->
-    {Result, State2} =
-        apply_tree(Id,
-                   fun(Tree) ->
-                           [{_, Result}] = hashtree:key_hashes(Tree, Segment),
-                           {Result, Tree}
-                   end,
-                   State),
-    {reply, Result, State2};
+    apply_tree(Id,
+               fun(Tree) ->
+                       [{_, Result}] = hashtree:key_hashes(Tree, Segment),
+                       {Result, Tree}
+               end,
+               State);
 
-handle_call({compare, Id, Remote}, _From, State) ->
-    {Result, State2} =
-        apply_tree(Id,
-                   fun(Tree) ->
-                           Result = hashtree:compare(Tree, Remote),
-                           {Result, Tree}
-                   end,
-                   State),
-    {reply, Result, State2};
+handle_call({compare, Id, Remote}, From, State) ->
+    Tree = orddict:fetch(Id, State#state.trees),
+    spawn(fun() ->
+                  Result = hashtree:compare(Tree, Remote),
+                  gen_server:reply(From, Result)
+          end),
+    {noreply, State};
 
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
 handle_cast(build, State=#state{index=Index}) ->
+    lager:info("Starting build: ~p", [Index]),
     fold_keys(Index, self()),
+    lager:info("Finished build: ~p", [Index]),
     {noreply, State};
 
-handle_cast({insert, Id, Key, Hash}, State=#state{trees=Trees}) ->
-    lager:info("Insert into ~p/~p :: ~p / ~p", [State#state.index, Id, Key, Hash]),
-    Tree = orddict:fetch(Id, Trees),
-    Tree2 = hashtree:insert(Key, Hash, Tree),
-    Trees2 = orddict:store(Id, Tree2, Trees),
-    {noreply, State#state{trees=Trees2}};
+handle_cast({insert, Id, Key, Hash}, State) ->
+    State2 = do_insert(Id, Key, Hash, State),
+    {noreply, State2};
+handle_cast({insert_object, BKey, RObj}, State) ->
+    lager:info("Inserting object ~p", [BKey]),
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    ChashKey = riak_core_util:chash_key(BKey),
+    Idx=riak_core_ring:responsible_index(ChashKey, Ring),
+    State2 = do_insert(Idx, term_to_binary(BKey), hash_object(RObj), State),
+    {noreply, State2};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -172,7 +171,19 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 apply_tree(Id, Fun, State=#state{trees=Trees}) ->
+    case orddict:find(Id, Trees) of
+        error ->
+            {reply, not_responsible, State};
+        {ok, Tree} ->
+            {Result, Tree2} = Fun(Tree),
+            Trees2 = orddict:store(Id, Tree2, Trees),
+            State2 = State#state{trees=Trees2},
+            {reply, Result, State2}
+    end.
+
+do_insert(Id, Key, Hash, State=#state{trees=Trees}) ->
+    lager:info("Insert into ~p/~p :: ~p / ~p", [State#state.index, Id, Key, Hash]),
     Tree = orddict:fetch(Id, Trees),
-    {Result, Tree2} = Fun(Tree),
+    Tree2 = hashtree:insert(Key, Hash, Tree),
     Trees2 = orddict:store(Id, Tree2, Trees),
-    {Result, State#state{trees=Trees2}}.
+    State#state{trees=Trees2}.

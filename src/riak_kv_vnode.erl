@@ -110,11 +110,19 @@ do_exchange(Index) ->
     PL = riak_core_ring:preflist(IndexBin, Ring),
     LocalVN = {Index, node()},
     RemoteVN = hd(PL),
-    exchange_fsm:start_link(LocalVN, RemoteVN, Index),
+    %% exchange_fsm:start_link(LocalVN, RemoteVN, Index),
+    RI = responsible_indices(Index),
+    RI2 = responsible_indices(element(1, RemoteVN)),
+    lager:info("RI1: ~p", [RI]),
+    lager:info("RI2: ~p", [RI2]),
+    [exchange_fsm:start_link(LocalVN, RemoteVN, I) || I <- RI],
     ok.
 
 responsible_indices(Index) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    responsible_indices(Index, Ring).
+
+responsible_indices(Index, Ring) ->
     Buckets = riak_core_ring:get_buckets(Ring),
     BucketProps = [riak_core_bucket:get_bucket(Bucket, Ring) || Bucket <- Buckets],
     Default = app_helper:get_env(riak_core, default_bucket_props),
@@ -413,10 +421,18 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
     do_fold(FoldWrapper, Acc0, Sender, State);
 
 %% exchange commands
-handle_command({update_tree, Index}, _Sender, State) ->
-    index_hashtree:update(Index, State#state.hashtrees),
-    Reply = {tree_built, State#state.idx, Index},
-    {reply, Reply, State};
+handle_command({update_tree, Index}, Sender, State) ->
+    spawn(fun() ->
+                  case index_hashtree:update(Index, State#state.hashtrees) of
+                      ok ->
+                          Reply = {tree_built, State#state.idx, Index},
+                          riak_core_vnode:reply(Sender, Reply);
+                      not_responsible ->
+                          Reply = {not_responsible, State#state.idx, Index},
+                          riak_core_vnode:reply(Sender, Reply)
+                  end
+          end),
+    {noreply, State};
 
 handle_command({exchange_bucket, Index, Level, Bucket}, _Sender, State) ->
     Result = index_hashtree:exchange_bucket(Index, Level, Bucket, State#state.hashtrees),
@@ -430,10 +446,13 @@ handle_command({exchange_segment, Index, Segment}, _Sender, State) ->
     %% {reply, Reply, State};
     {reply, Result, State};
 
-handle_command({compare_trees, Index, Remote}, _Sender, State) ->
-    Result = index_hashtree:compare(Index, Remote, State#state.hashtrees),
-    Reply = {keydiff, State#state.idx, Index, Result},
-    {reply, Reply, State};
+handle_command({compare_trees, Index, Remote}, Sender, State) ->
+    spawn(fun() ->
+                  Result = index_hashtree:compare(Index, Remote, State#state.hashtrees),
+                  Reply = {keydiff, State#state.idx, Index, Result},
+                  riak_core_vnode:reply(Sender, Reply)
+          end),
+    {noreply, State};
 
 %% Commands originating from inside this vnode
 handle_command({backend_callback, Ref, Msg}, _Sender,
@@ -824,6 +843,7 @@ perform_put({false, _Obj},
     {{dw, Idx, ReqId}, State};
 perform_put({true, Obj},
             #state{idx=Idx,
+                   hashtrees=Trees,
                    mod=Mod,
                    modstate=ModState}=State,
             #putargs{returnbody=RB,
@@ -833,6 +853,7 @@ perform_put({true, Obj},
     Val = term_to_binary(Obj),
     case Mod:put(Bucket, Key, IndexSpecs, Val, ModState) of
         {ok, UpdModState} ->
+            index_hashtree:insert_object({Bucket, Key}, Val, Trees),
             case RB of
                 true ->
                     Reply = {dw, Idx, Obj, ReqID};
