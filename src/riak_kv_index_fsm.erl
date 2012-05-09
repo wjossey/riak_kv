@@ -84,8 +84,7 @@ process_results({error, Reason}, _State) ->
 process_results({_Vnode, {_Bucket, _Results}},
                 StateData=#state{results_so_far=ResultsSoFar,
                                  max_results=ResultsSoFar}) ->
-    lager:debug("Got more results but already sent enough down the wire"),
-    {ok, StateData};
+    {done, StateData};
 process_results({Vnode, {_Bucket, Results}},
                 StateData=#state{client_type=_ClientType,
                                  merge_sort_buffer=MergeSortBuffer,
@@ -105,7 +104,7 @@ process_results({Vnode, {_Bucket, Results}},
         {ToSend, NewBuff} ->
             DownTheWire = case (ResultsSoFar + length(ToSend)) > MaxResults of
                 true ->
-                    lists:sublist(ToSend, ((ResultsSoFar + length(ToSend)) - MaxResults));
+                    lists:sublist(ToSend, (MaxResults - ResultsSoFar));
                 false ->
                     ToSend
             end,
@@ -145,12 +144,10 @@ finish(clean,
             LastResults = sms:done(MergeSortBuffer),
             DownTheWire = case (ResultsSoFar + length(LastResults)) > MaxResults of
                 true ->
-                    lists:sublist(LastResults, ((ResultsSoFar + length(LastResults)) - MaxResults));
+                    lists:sublist(LastResults, (MaxResults - ResultsSoFar));
                 false ->
                     LastResults
             end,
-            lager:debug("Sent ~p results total", 
-                [ResultsSoFar + length(DownTheWire)]),
             ClientPid ! {ReqId, {results, DownTheWire}},
             ClientPid ! {ReqId, done}
     end,
