@@ -143,7 +143,7 @@ handle_streaming_index_query(RD, Ctx) ->
 
     {ok, ReqID} =  Client:stream_get_index(Bucket, Query),
     StreamFun = index_stream_helper(ReqID, Boundary),
-    {{stream, {<<>>, StreamFun}}, RD, CTypeRD}.
+    {{stream, {<<>>, StreamFun}}, CTypeRD, Ctx}.
 
 index_stream_helper(ReqID, Boundary) ->
     fun() ->
@@ -152,7 +152,6 @@ index_stream_helper(ReqID, Boundary) ->
                 {iolist_to_binary(["\r\n--", Boundary, "--\r\n"]), done};
             {ReqID, {results, Results}} ->
                 %% JSONify the results...
-                lager:debug("Got some results in WM: ~p", [Results]),
                 JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
                 JsonKeys2 = mochijson2:encode(JsonKeys1),
                 Body = ["\r\n--", Boundary, "\r\n",
