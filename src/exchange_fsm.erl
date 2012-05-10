@@ -11,45 +11,67 @@
 
 -record(state, {local,
                 remote,
-                index,
-                built}).
+                index_n,
+                built,
+                missing,
+                from}).
+
+%% Per state transition timeout used by certain transitions
+-define(DEFAULT_ACTION_TIMEOUT, 20000).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-start_link(LocalVN, RemoteVN, Index) ->
-    gen_fsm:start_link(?MODULE, [LocalVN, RemoteVN, Index], []).
+start_link(LocalVN, RemoteVN, IndexN) ->
+    gen_fsm:start_link(?MODULE, [LocalVN, RemoteVN, IndexN], []).
+
+sync_start_exchange(Fsm) ->
+    gen_fsm:sync_send_event(Fsm, start_exchange, infinity).
+
+start_exchange(Fsm) ->
+    gen_fsm:send_event(Fsm, start_exchange).
 
 %%%===================================================================
 %%% gen_fsm callbacks
 %%%===================================================================
 
-init([LocalVN, RemoteVN, Index]) ->
+init([LocalVN, RemoteVN, IndexN]) ->
     State = #state{local=LocalVN,
                    remote=RemoteVN,
-                   index=Index,
+                   index_n=IndexN,
                    built=0},
-    {ok, update_trees, State, 0}.
+    {ok, update_trees, State}.
 
-update_trees(timeout, State=#state{local=LocalVN,
-                                   remote=RemoteVN,
-                                   index=Index}) ->
+update_trees(start_exchange, From, State) ->
+    update_trees(start_exchange, State#state{from=From}).
+
+update_trees(start_exchange, State=#state{local=LocalVN,
+                                          remote=RemoteVN,
+                                          index_n=IndexN}) ->
     lager:info("Sending to ~p", [LocalVN]),
     lager:info("Sending to ~p", [RemoteVN]),
 
     Sender = {fsm, undefined, self()},
     riak_core_vnode_master:command(LocalVN,
-                                   {update_tree, Index},
+                                   {update_tree, IndexN},
                                    Sender,
                                    riak_kv_vnode_master),
     riak_core_vnode_master:command(RemoteVN,
-                                   {update_tree, Index},
+                                   {update_tree, IndexN},
                                    Sender,
                                    riak_kv_vnode_master),
-    {next_state, update_trees, State};
-update_trees({not_responsible, VNodeIdx, Index}, State) ->
-    lager:info("VNode ~p does not cover index ~p", [VNodeIdx, Index]),
+    next_state_with_timeout(update_trees, State);
+update_trees(timeout,State=#state{local=LocalVN,
+                                  remote=RemoteVN,
+                                  index_n=IndexN}) ->
+    lager:info("Timeout during exchange between (local) ~p and (remote) ~p, "
+               "(preflist) ~p", [LocalVN, RemoteVN, IndexN]),
+    maybe_reply({timeout, RemoteVN, IndexN}, State),
+    {stop, normal, State};
+update_trees({not_responsible, VNodeIdx, IndexN}, State) ->
+    lager:info("VNode ~p does not cover preflist ~p", [VNodeIdx, IndexN]),
+    maybe_reply({not_responsible, VNodeIdx, IndexN}, State),
     {stop, normal, State};
 update_trees({tree_built, _, _}, State) ->
     %% lager:info("R: ~p", [Result]),
@@ -60,14 +82,14 @@ update_trees({tree_built, _, _}, State) ->
             lager:info("Moving to key exchange"),
             {next_state, key_exchange, State, 0};
         _ ->
-            {next_state, update_trees, State#state{built=Built}}
+            next_state_with_timeout(update_trees, State#state{built=Built})
     end.
 
 key_exchange(timeout, State=#state{local=LocalVN,
                                    remote=RemoteVN,
-                                   index=Index}) ->
+                                   index_n=IndexN}) ->
     lager:info("Starting key exchange between ~p and ~p", [LocalVN, RemoteVN]),
-    lager:info("Exchanging hashes for preflist ~p", [Index]),
+    lager:info("Exchanging hashes for preflist ~p", [IndexN]),
     %% R1 = riak_core_vnode_master:sync_command(LocalVN,
     %%                                          {exchange_bucket, Index, 1, 0},
     %%                                          riak_kv_vnode_master),
@@ -80,32 +102,40 @@ key_exchange(timeout, State=#state{local=LocalVN,
     %% lager:info("R2: ~p", [R2]),
 
     Remote = fun(get_bucket, {L, B}) ->
-                     exchange_bucket(RemoteVN, Index, L, B);
+                     exchange_bucket(RemoteVN, IndexN, L, B);
                 (key_hashes, Segment) ->
-                     exchange_segment(RemoteVN, Index, Segment)
+                     exchange_segment(RemoteVN, IndexN, Segment)
              end,
 
     R = riak_core_vnode_master:sync_command(LocalVN,
-                                            {compare_trees, Index, Remote},
+                                            {compare_trees, IndexN, Remote},
                                             riak_kv_vnode_master),
 
     {keydiff,_,_,KeyDiff} = R,
     Missing = [binary_to_term(BKey) || {_, BKey} <- KeyDiff],
+    [riak_kv_vnode:get([LocalVN, RemoteVN], BKey, make_ref()) || BKey <- Missing],
+    {next_state, test, State#state{missing=Missing}, 1000}.
+
+test(timeout, State=#state{missing=Missing}) ->
     {ok, RC} = riak:local_client(),
     [begin
          lager:info("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
          RC:get(Bucket, Key)
      end || {Bucket, Key} <- Missing],
-    {stop, normal, State}.
-
-exchange_bucket(VN, Index, Level, Bucket) ->
+    maybe_reply(ok, State),
+    {stop, normal, State};
+test(Request, State) ->
+    lager:info("Req: ~p", [Request]),
+    {next_state, test, State, 500}.
+    
+exchange_bucket(VN, IndexN, Level, Bucket) ->
     riak_core_vnode_master:sync_command(VN,
-                                        {exchange_bucket, Index, Level, Bucket},
+                                        {exchange_bucket, IndexN, Level, Bucket},
                                         riak_kv_vnode_master).
 
-exchange_segment(VN, Index, Segment) ->
+exchange_segment(VN, IndexN, Segment) ->
     riak_core_vnode_master:sync_command(VN,
-                                        {exchange_segment, Index, Segment},
+                                        {exchange_segment, IndexN, Segment},
                                         riak_kv_vnode_master).
 
 handle_event(_Event, _StateName, State) ->
@@ -129,3 +159,13 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+maybe_reply(_, #state{from=undefined}) ->
+    ok;
+maybe_reply(Reply, #state{from=From}) ->
+    gen_fsm:reply(From, Reply).
+
+next_state_with_timeout(StateName, State) ->
+    next_state_with_timeout(StateName, State, ?DEFAULT_ACTION_TIMEOUT).
+next_state_with_timeout(StateName, State, Timeout) ->
+    {next_state, StateName, State, Timeout}.
