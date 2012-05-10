@@ -84,6 +84,10 @@ process_results({error, Reason}, _State) ->
 process_results({_Vnode, {_Bucket, _Results}},
                 StateData=#state{results_so_far=ResultsSoFar,
                                  max_results=ResultsSoFar}) ->
+    %% We already have as many results
+    %% as we need, so go ahead and say we're done.
+    %% NOTE that this callback will still get called
+    %% once _per_ vnode in the coverage query.
     {done, StateData};
 process_results({Vnode, {_Bucket, Results}},
                 StateData=#state{client_type=_ClientType,
@@ -97,22 +101,11 @@ process_results({Vnode, {_Bucket, Results}},
 
     %% add new results to buffer
     BufferWithNewResults = sms:add_results(Vnode, ReversedResults, MergeSortBuffer),
-    ProcessBuffer = sms:sms(BufferWithNewResults),
-    {NewBuffer, LengthSent} = case ProcessBuffer of
-        {[], BufferWithNewResults} ->
-            {BufferWithNewResults, 0};
-        {ToSend, NewBuff} ->
-            DownTheWire = case (ResultsSoFar + length(ToSend)) > MaxResults of
-                true ->
-                    lists:sublist(ToSend, (MaxResults - ResultsSoFar));
-                false ->
-                    ToSend
-            end,
-            ClientPid ! {ReqId, {results, DownTheWire}},
-            {NewBuff, length(DownTheWire)}
-    end,
+    {CouldSend, NewBuffer} = sms:sms(BufferWithNewResults),
+    NewResultsSoFar = handle_buffer(ClientPid, ReqId, ResultsSoFar, MaxResults, CouldSend),
+
     {ok, StateData#state{merge_sort_buffer=NewBuffer,
-                         results_so_far=(ResultsSoFar + LengthSent)}};
+                         results_so_far=NewResultsSoFar}};
 process_results({_VnodeID, done}, StateData) ->
     {done, StateData}.
 
@@ -142,13 +135,22 @@ finish(clean,
             luke_flow:finish_inputs(ClientPid);
         plain ->
             LastResults = sms:done(MergeSortBuffer),
-            DownTheWire = case (ResultsSoFar + length(LastResults)) > MaxResults of
-                true ->
-                    lists:sublist(LastResults, (MaxResults - ResultsSoFar));
-                false ->
-                    LastResults
-            end,
-            ClientPid ! {ReqId, {results, DownTheWire}},
+            handle_buffer(ClientPid, ReqId, ResultsSoFar, MaxResults, LastResults),
             ClientPid ! {ReqId, done}
     end,
     {stop, normal, StateData}.
+
+handle_buffer(_From, _ReqId, SentSoFar, _MaxResults, []) ->
+    SentSoFar;
+handle_buffer(ClientPid, ReqId, SentSoFar, MaxResults, CouldSend) ->
+    case MaxResults of
+        undefined ->
+            %% just send everything
+            ClientPid ! {ReqId, {results, CouldSend}},
+            SentSoFar + length(CouldSend);
+        _ ->
+            ToSend = lists:sublist(CouldSend, (MaxResults - SentSoFar)),
+            ClientPid ! {ReqId, {results, ToSend}},
+            SentSoFar + length(ToSend)
+    end.
+
