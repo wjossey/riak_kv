@@ -107,12 +107,17 @@
 do_exchange(Index) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     LocalVN = {Index, node()},
-    RI = responsible_indices(Index),
+    RP = responsible_preflists(Index),
     Sibs = preflist_siblings(Index),
     [begin
          Owner = riak_core_ring:index_owner(Ring, RemoteIdx),
          RemoteVN = {RemoteIdx, Owner},
-         [exchange_fsm:start_link(LocalVN, RemoteVN, I) || I <- RI]
+         [begin
+              {ok, Fsm} = exchange_fsm:start_link(LocalVN, RemoteVN, IN),
+              exchange_fsm:sync_start_exchange(Fsm),
+              lager:info("==="),
+              ok
+          end || IN <- RP]
      end || RemoteIdx <- Sibs,
             RemoteIdx /= Index],
     ok.
@@ -127,6 +132,17 @@ determine_max_n(Ring) ->
                                erlang:max(N, MaxN)
                        end, MaxN0, BucketProps),
     MaxN.
+
+determine_all_n(Ring) ->
+    Buckets = riak_core_ring:get_buckets(Ring),
+    BucketProps = [riak_core_bucket:get_bucket(Bucket, Ring) || Bucket <- Buckets],
+    Default = app_helper:get_env(riak_core, default_bucket_props),
+    DefaultN = proplists:get_value(n_val, Default),
+    AllN = lists:foldl(fun(Props, AllN) ->
+                               N = proplists:get_value(n_val, Props),
+                               ordsets:add_element(N, AllN)
+                       end, [DefaultN], BucketProps),
+    AllN.
 
 responsible_indices(Index) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -143,6 +159,27 @@ responsible_indices(Index, N, Ring) ->
     RevIndices = lists:reverse(Indices),
     {Pred, _} = lists:split(N, RevIndices),
     lists:reverse(Pred).
+
+responsible_preflists(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    responsible_preflists(Index, Ring).
+
+responsible_preflists(Index, Ring) ->
+    AllN = determine_all_n(Ring),
+    responsible_preflists(Index, AllN, Ring).
+
+responsible_preflists(Index, AllN, Ring) ->
+    IndexBin = <<Index:160/integer>>,
+    PL = riak_core_ring:preflist(IndexBin, Ring),
+    Indices = [Idx || {Idx, _} <- PL],
+    RevIndices = lists:reverse(Indices),
+    lists:flatmap(fun(N) ->
+                          responsible_preflists_n(RevIndices, N)
+                  end, AllN).
+
+responsible_preflists_n(RevIndices, N) ->
+    {Pred, _} = lists:split(N, RevIndices),
+    [{Idx, N} || Idx <- lists:reverse(Pred)].
 
 preflist_siblings(Index) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -163,17 +200,13 @@ preflist_siblings(Index, N, Ring) ->
 
 maybe_rebuild_hashtrees(State=#state{idx=Index}) ->
     %% TODO: Don't build if not primary
-    Indices = responsible_indices(Index),
+    RP = responsible_preflists(Index),
     %% Indices = [Index],
     {ok, Trees} = index_hashtree:start_link(Index),
-    [index_hashtree:new_tree(Idx, Trees) || Idx <- Indices],
-    index_hashtree:build(Trees),
+    [index_hashtree:new_tree({Idx,N}, Trees) || {Idx,N} <- RP],
+    %% Hashtrees now build themselves
+    %% index_hashtree:build(Trees),
     State#state{hashtrees=Trees}.
-    %% Trees = [{Idx, index_hashtree:start_link()} || Idx <- Indices],
-    %% Trees2 = orddict:from_list(Trees),
-    %% State#state{hashtrees=Trees2}.
-    %% _A = Index,
-    %% State#state{hashtrees=[]}.
 
 %% API
 start_vnode(I) ->
@@ -440,35 +473,35 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
     do_fold(FoldWrapper, Acc0, Sender, State);
 
 %% exchange commands
-handle_command({update_tree, Index}, Sender, State) ->
+handle_command({update_tree, IndexN}, Sender, State) ->
     spawn(fun() ->
-                  case index_hashtree:update(Index, State#state.hashtrees) of
+                  case index_hashtree:update(IndexN, State#state.hashtrees) of
                       ok ->
-                          Reply = {tree_built, State#state.idx, Index},
+                          Reply = {tree_built, State#state.idx, IndexN},
                           riak_core_vnode:reply(Sender, Reply);
                       not_responsible ->
-                          Reply = {not_responsible, State#state.idx, Index},
+                          Reply = {not_responsible, State#state.idx, IndexN},
                           riak_core_vnode:reply(Sender, Reply)
                   end
           end),
     {noreply, State};
 
-handle_command({exchange_bucket, Index, Level, Bucket}, _Sender, State) ->
-    Result = index_hashtree:exchange_bucket(Index, Level, Bucket, State#state.hashtrees),
-    %% Reply = {bucket, State#state.idx, Index, Result},
+handle_command({exchange_bucket, IndexN, Level, Bucket}, _Sender, State) ->
+    Result = index_hashtree:exchange_bucket(IndexN, Level, Bucket, State#state.hashtrees),
+    %% Reply = {bucket, State#state.idx, IndexN, Result},
     %% {reply, Reply, State};
     {reply, Result, State};
 
-handle_command({exchange_segment, Index, Segment}, _Sender, State) ->
-    Result = index_hashtree:exchange_segment(Index, Segment, State#state.hashtrees),
-    %% Reply = {segment, State#state.idx, Index, Result},
+handle_command({exchange_segment, IndexN, Segment}, _Sender, State) ->
+    Result = index_hashtree:exchange_segment(IndexN, Segment, State#state.hashtrees),
+    %% Reply = {segment, State#state.idx, IndexN, Result},
     %% {reply, Reply, State};
     {reply, Result, State};
 
-handle_command({compare_trees, Index, Remote}, Sender, State) ->
+handle_command({compare_trees, IndexN, Remote}, Sender, State) ->
     spawn(fun() ->
-                  Result = index_hashtree:compare(Index, Remote, State#state.hashtrees),
-                  Reply = {keydiff, State#state.idx, Index, Result},
+                  Result = index_hashtree:compare(IndexN, Remote, State#state.hashtrees),
+                  Reply = {keydiff, State#state.idx, IndexN, Result},
                   riak_core_vnode:reply(Sender, Reply)
           end),
     {noreply, State};

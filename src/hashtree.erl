@@ -35,15 +35,8 @@ new(TreeId) ->
     new(TreeId, State).
 
 new(TreeId, LinkedStore) ->
-    if is_integer(TreeId) andalso
-       (TreeId >= 0) andalso
-       (TreeId < ((1 bsl 160)-1)) ->
-            ok;
-       true ->
-            erlang:error(badarg)
-    end,
     NumLevels = erlang:trunc(math:log(?NUM_SEGMENTS) / math:log(?WIDTH)) + 1,
-    State = #state{id=TreeId,
+    State = #state{id=encode_id(TreeId),
                    levels=NumLevels,
                    %% dirty_segments=gb_sets:new(),
                    dirty_segments=bitarray_new(?NUM_SEGMENTS),
@@ -51,6 +44,18 @@ new(TreeId, LinkedStore) ->
     State2 = share_segment_store(State, LinkedStore),
     State2.
 
+encode_id(TreeId) when is_integer(TreeId) ->
+    if (TreeId >= 0) andalso
+       (TreeId < ((1 bsl 160)-1)) ->
+            <<TreeId:176/integer>>;
+       true ->
+            erlang:error(badarg)
+    end;
+encode_id(TreeId) when is_binary(TreeId) and (byte_size(TreeId) == 22) ->
+    TreeId;
+encode_id(_) ->
+    erlang:error(badarg).
+    
 destroy(State) ->
     eleveldb:destroy(State#state.path, []),
     State.
@@ -192,14 +197,14 @@ set_disk_bucket(Level, Bucket, Val, State=#state{id=Id, ref=Ref}) ->
     State.
 
 encode(TreeId, Segment, Key) ->
-    <<TreeId:160/integer,$s,Segment:64/integer,Key/binary>>.
+    <<TreeId:22/binary,$s,Segment:64/integer,Key/binary>>.
 
 decode(Bin) ->
-    <<TreeId:160/integer,$s,Segment:64/integer,Key/binary>> = Bin,
+    <<TreeId:22/binary,$s,Segment:64/integer,Key/binary>> = Bin,
     {TreeId, Segment, Key}.
 
 encode_bucket(TreeId, Level, Bucket) ->
-    <<TreeId:160/integer,$b,Level:64/integer,Bucket:64/integer>>.
+    <<TreeId:22/binary,$b,Level:64/integer,Bucket:64/integer>>.
 
 hashes(State, Segments) ->
     multi_select_segment(State, Segments, fun hash/1).
@@ -283,9 +288,11 @@ orddict_delta(D1, D2) ->
     orddict_delta(D1, D2, []).
 
 orddict_delta([{K1,V1}|D1], [{K2,_}=E2|D2], Acc) when K1 < K2 ->
+    io:format("k1 < k2~n"),
     Acc2 = [{K1,{V1,'$none'}} | Acc],
     orddict_delta(D1, [E2|D2], Acc2);
 orddict_delta([{K1,_}=E1|D1], [{K2,V2}|D2], Acc) when K1 > K2 ->
+    io:format("k1 > k2~n"),
     Acc2 = [{K2,{'$none',V2}} | Acc],
     orddict_delta([E1|D1], D2, Acc2);
 orddict_delta([{K1,V1}|D1], [{_K2,V2}|D2], Acc) -> %K1 == K2
