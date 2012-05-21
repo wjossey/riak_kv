@@ -4,7 +4,11 @@
          update_tree/1,
          destroy/1,
          local_compare/2,
-         compare/2]).
+         compare/2,
+         levels/1,
+         segments/1,
+         width/1,
+         mem_levels/1]).
 -compile(export_all).
 
 -include_lib("eqc/include/eqc.hrl").
@@ -17,6 +21,9 @@
 
 -record(state, {id,
                 levels,
+                segments,
+                width,
+                mem_levels,
                 tree,
                 ref,
                 path,
@@ -32,9 +39,15 @@ new() ->
 
 new(TreeId) ->
     State = new_segment_store(#state{}),
-    new(TreeId, State).
+    new(TreeId, State, []).
 
-new(TreeId, LinkedStore) ->
+new(TreeId, Options) when is_list(Options) ->
+    State = new_segment_store(#state{}),
+    new(TreeId, State, Options);
+new(TreeId, LinkedStore = #state{}) ->
+    new(TreeId, LinkedStore, []).
+
+new(TreeId, LinkedStore, Options) ->
     if is_integer(TreeId) andalso
        (TreeId >= 0) andalso
        (TreeId < ((1 bsl 160)-1)) ->
@@ -42,9 +55,15 @@ new(TreeId, LinkedStore) ->
        true ->
             erlang:error(badarg)
     end,
-    NumLevels = erlang:trunc(math:log(?NUM_SEGMENTS) / math:log(?WIDTH)) + 1,
+    Segments = proplists:get_value(segments, Options, ?NUM_SEGMENTS),
+    Width = proplists:get_value(width, Options, ?WIDTH),
+    MemLevels = proplists:get_value(mem_levels, Options, ?MEM_LEVELS),
+    NumLevels = erlang:trunc(math:log(Segments) / math:log(Width)) + 1,
     State = #state{id=TreeId,
                    levels=NumLevels,
+                   segments=Segments,
+                   width=Width,
+                   mem_levels=MemLevels,
                    %% dirty_segments=gb_sets:new(),
                    dirty_segments=bitarray_new(?NUM_SEGMENTS),
                    tree=dict:new()},
@@ -95,6 +114,18 @@ local_compare(T1, T2) ->
 
 compare(Tree, Remote) ->
     compare(1, 0, Tree, Remote, []).
+
+levels(#state{levels=L}) ->
+    L.
+
+segments(#state{segments=S}) ->
+    S.
+
+width(#state{width=W}) ->
+    W.
+
+mem_levels(#state{mem_levels=M}) ->
+    M.
 
 %%%===================================================================
 %%% Internal functions
@@ -149,7 +180,7 @@ group(L) ->
     [{LastBucket, LastGroup} | Groups].
 
 get_bucket(Level, Bucket, State) ->
-    case Level =< ?MEM_LEVELS of
+    case Level =< State#state.mem_levels of
         true ->
             get_memory_bucket(Level, Bucket, State);
         false ->
@@ -157,7 +188,7 @@ get_bucket(Level, Bucket, State) ->
     end.
 
 set_bucket(Level, Bucket, Val, State) ->
-    case Level =< ?MEM_LEVELS of
+    case Level =< State#state.mem_levels of
         true ->
             set_memory_bucket(Level, Bucket, Val, State);
         false ->
@@ -507,6 +538,25 @@ snapshot_test() ->
     destroy(B2),
     ?assertEqual([{different, <<"10">>}], KeyDiff),
     ok.
+
+eqc_test_() ->
+    {timeout, 5,
+        fun() ->
+                ?assert(eqc:quickcheck(eqc:testing_time(4, prop_correct())))
+        end
+    }.
+
+delta_test() ->
+    T1 = update_tree(insert(<<"1">>, crypto:sha(term_to_binary(make_ref())),
+            new())),
+    T2 = update_tree(insert(<<"2">>, crypto:sha(term_to_binary(make_ref())),
+            new())),
+    Diff = local_compare(T1, T2),
+    ?assertEqual([{remote_missing, <<"1">>}, {missing, <<"2">>}], Diff),
+    Diff2 = local_compare(T2, T1),
+    ?assertEqual([{missing, <<"1">>}, {remote_missing, <<"2">>}], Diff2),
+    ok.
+
 
 %%%===================================================================
 %%% EQC
