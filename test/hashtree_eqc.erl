@@ -52,8 +52,10 @@ command(S) ->
             S#state.tree2 /= undefined] ++
         [{call, ?MODULE, write_both, [S#state.tree1, S#state.tree2, object(S)]} ||
             S#state.tree1 /= undefined, S#state.tree2 /= undefined] ++
-        %[{call, ?MODULE, update_tree_1, [S#state.tree1]} || S#state.tree1 /= undefined] ++
-        %[{call, ?MODULE, update_tree_2, [S#state.tree2]} || S#state.tree2 /= undefined] ++
+        [{call, ?MODULE, update_tree_1, [S#state.tree1]} || S#state.tree1 /= undefined] ++
+        [{call, ?MODULE, update_tree_2, [S#state.tree2]} || S#state.tree2 /= undefined] ++
+        [{call, ?MODULE, reconcile, [S]} ||
+                S#state.tree1 /= undefined, S#state.tree2 /= undefined] ++
         []
     ).
 
@@ -90,7 +92,29 @@ update_tree_1(T1) ->
 update_tree_2(T2) ->
     hashtree:update_tree(T2).
 
-%update_tree
+reconcile(S) ->
+    A2 = hashtree:update_tree(S#state.tree1),
+    B2 = hashtree:update_tree(S#state.tree2),
+    KeyDiff = hashtree:local_compare(A2, B2),
+    Missing = [M || {missing, M} <- KeyDiff],
+    RemoteMissing = [M || {remote_missing, M} <- KeyDiff],
+    Different = [D || {different, D} <- KeyDiff],
+
+    Insert = fun(Tree, Vals) ->
+            lists:foldl(fun({Key, Hash}, Acc) ->
+                        hashtree:insert(Key, Hash, Acc)
+                end, Tree, Vals)
+    end,
+
+    A3 = Insert(A2, [lists:keyfind(K, 1, S#state.only2) ||  K <- Missing, lists:keyfind(K, 1,
+                S#state.only2) /= false]),
+    B3 = Insert(B2, [lists:keyfind(K, 1, S#state.only1) ||  K <- RemoteMissing, lists:keyfind(K, 1,
+                S#state.only1) /= false]),
+    B4 = Insert(B3, [lists:keyfind(K, 1, S#state.only1) ||  K <- Different, lists:keyfind(K, 1,
+                S#state.only1) /= false]),
+    Res = {hashtree:update_tree(A3), hashtree:update_tree(B4)},
+    Res.
+
 
 write_differing(Tree1, Tree2, {Key, Hash1}, Hash2) ->
     {{Key, Hash1}, {Key, Hash2}, hashtree:insert(Key, Hash1, Tree1),
@@ -105,6 +129,8 @@ precondition(S,{call,_,write_1,_}) ->
 precondition(S,{call,_,write_2,_}) ->
     S#state.tree2 /= undefined;
 precondition(S,{call,_,write_both,_}) ->
+    S#state.tree1 /= undefined andalso S#state.tree2 /= undefined;
+precondition(S,{call,_,reconcile,_}) ->
     S#state.tree1 /= undefined andalso S#state.tree2 /= undefined;
 precondition(S,{call,_,update_tree_1,_}) ->
     S#state.tree1 /= undefined;
@@ -133,7 +159,16 @@ next_state(S,R,{call, _, write_both, [_, _, {Key, Val}]}) ->
         tree2={call, erlang, element, [2, R]},
         only1=[{Key, Val}|lists:keydelete(Key, 1, S#state.only1)],
         only2=[{Key, Val}|lists:keydelete(Key, 1, S#state.only2)]
+    };
+next_state(S,R,{call, _, reconcile, [_]}) ->
+    Keys = lists:ukeymerge(1, lists:ukeysort(1, S#state.only1),
+        lists:ukeysort(1, S#state.only2)),
+    S#state{tree1={call, erlang, element, [1, R]},
+        tree2={call, erlang, element, [2, R]},
+        only1 = Keys,
+        only2 = Keys
     }.
+
 
 prop_correct() ->
     ?FORALL({Segments, Width, MemLevels}, make_treevars(),
