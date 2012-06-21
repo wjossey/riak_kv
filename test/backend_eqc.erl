@@ -47,6 +47,9 @@
 %% eqc property
 -export([prop_backend/4]).
 
+%% external test configuration/assistant callbacks
+-export([bucket_prefix_1/0, key_prefix_1/0, key_suffix_1/0]).
+
 %% States
 -export([stopped/1,
          running/1]).
@@ -122,10 +125,24 @@ prop_backend(Backend, Volatile, Config, Cleanup) ->
 %%====================================================================
 
 bucket() ->
-    elements([<<"b1">>,<<"b2">>,<<"b3">>,<<"b4">>]).
+    Gen = elements([<<"b1">>,<<"b2">>]),
+    oneof([Gen,
+           ?LET(Suffix, Gen,
+                begin
+                    Prefix1 = bucket_prefix_1(),
+                    iolist_to_binary([Prefix1, Suffix])
+                end)
+          ]).
 
 key() ->
-    elements([<<"k1">>,<<"k2">>,<<"k3">>,<<"k4">>]).
+    oneof([elements([<<"k1">>,<<"k2">>]),
+           ?LET({Prefix, Suffix}, {oneof([254,255]), oneof([0,1])},
+                begin
+                    PrefixLen = key_prefix_1(),
+                    SuffixLen = key_suffix_1(),
+                    <<Prefix:(PrefixLen*8), Suffix:SuffixLen>>
+                end)
+          ]).
 
 val() ->
     %% The creation of the riak object and the call
@@ -545,6 +562,15 @@ postcondition(_From, _To, S,{call, _M, is_empty, [_BeState]}, R) ->
     R =:= (orddict:size(S#qcst.d) =:= 0);
 postcondition(_From, _To, _S, _C, _R) ->
     true.
+
+bucket_prefix_1() ->
+    "0b:".
+
+key_prefix_1() ->
+    16.
+
+key_suffix_1() ->
+    16.
 
 -endif.
 
