@@ -67,7 +67,8 @@
                s,  % Module state returned by Backend:start
                olds=sets:new(), % Old states after a stop
                d=[], % Orddict of values stored
-               i=ordsets:new()}). % List of indexes
+               i=ordsets:new(), % List of indexes
+               put_list=[]}).   % List of put keys
 
 %% ====================================================================
 %% Public API
@@ -362,7 +363,8 @@ next_state_data(stopped, running, S, R, {call, _M, init_backend, _}) ->
     S#qcst{s=R};
 next_state_data(_From, _To, S, _R, {call, _M, put, [Bucket, Key, IndexSpecs, Val, _]}) ->
     S#qcst{d = orddict:store({Bucket, Key}, Val, S#qcst.d),
-           i = update_indexes(Bucket, Key, IndexSpecs, S#qcst.i)};
+           i = update_indexes(Bucket, Key, IndexSpecs, S#qcst.i),
+           put_list = [{Bucket, Key}|S#qcst.put_list]};
 next_state_data(_From, _To, S, _R, {call, _M, delete, [Bucket, Key|_]}) ->
     S#qcst{d = orddict:erase({Bucket, Key}, S#qcst.d),
            i = remove_indexes(Bucket, Key, S#qcst.i)};
@@ -397,6 +399,14 @@ running(#qcst{backend=Backend,
 dynamic_precondition(_From,_To,#qcst{backend=Backend},{call, _M, fold_keys, [_FoldFun, _Acc, [{index, Bucket, _}], BeState]}) ->
     {ok, Capabilities} = Backend:capabilities(Bucket, BeState),
     lists:member(indexes, Capabilities);
+dynamic_precondition(_From,_To,#qcst{backend=Backend,put_list = PutList},{call, _M, put, [Bucket, Key, _IndexSpecs, _Val, BeState]}) ->
+    {ok, Capabilities} = Backend:capabilities(Bucket, BeState),
+    case lists:member(write_once_keys, Capabilities) of
+        false ->
+            true;                               % ok to continue
+        true ->
+            not lists:member({Bucket, Key}, PutList)
+    end;
 dynamic_precondition(_From,_To,_S,_C) ->
     true.
 
