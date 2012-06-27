@@ -83,6 +83,7 @@
                 index_buf_size :: pos_integer(),
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
+                put_plus_object :: boolean(),
                 in_handoff = false :: boolean() }).
 
 -type index_op() :: add | remove.
@@ -243,8 +244,11 @@ init([Index]) ->
     case catch Mod:start(Index, [{async_folds, AsyncFolding}|Configuration]) of
         {ok, ModState} ->
             %% Get the backend capabilities
+            PutPlusObject = lists:member(put_plus_object,
+                                         element(2,Mod:capabilities(ModState))),
             State = #state{idx=Index,
                            async_folding=AsyncFolding,
+                           put_plus_object=PutPlusObject,
                            mod=Mod,
                            modstate=ModState,
                            vnodeid=VId,
@@ -754,13 +758,16 @@ perform_put({false, _Obj},
 perform_put({true, Obj},
             #state{idx=Idx,
                    mod=Mod,
-                   modstate=ModState}=State,
+                   modstate=ModState,
+                   put_plus_object=PutPlusObject}=State,
             #putargs{returnbody=RB,
                      bkey={Bucket, Key},
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
+
     Val = term_to_binary(Obj),
-    case Mod:put(Bucket, Key, IndexSpecs, Val, ModState) of
+    case do_mod_put(PutPlusObject, Mod, Bucket, Key, IndexSpecs, Val, Obj,
+                    ModState) of
         {ok, UpdModState} ->
             case RB of
                 true ->
@@ -1053,7 +1060,8 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 %% upon receipt of a handoff datum, there is no client FSM
 do_diffobj_put({Bucket, Key}, DiffObj,
                _StateData=#state{mod=Mod,
-                                 modstate=ModState}) ->
+                                 modstate=ModState,
+                                 put_plus_object=PutPlusObject}) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case Mod:get(Bucket, Key, ModState) of
@@ -1065,7 +1073,8 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     IndexSpecs = []
             end,
             Val = term_to_binary(DiffObj),
-            Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+            Res = do_mod_put(PutPlusObject, Mod, Bucket, Key,
+                             IndexSpecs, Val, DiffObj, ModState),
             case Res of
                 {ok, _UpdModState} ->
                     update_index_write_stats(IndexBackend, IndexSpecs),
@@ -1090,7 +1099,8 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                             IndexSpecs = []
                     end,
                     Val = term_to_binary(AMObj),
-                    Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+                    Res = do_mod_put(PutPlusObject, Mod, Bucket, Key,
+                                     IndexSpecs, Val, AMObj, ModState),
                     case Res of
                         {ok, _UpdModState} ->
                             update_index_write_stats(IndexBackend, IndexSpecs),
@@ -1240,6 +1250,12 @@ object_info({Bucket, _Key}=BKey) ->
     Hash = riak_core_util:chash_key(BKey),
     {Bucket, Hash}.
 
+
+%% @private
+do_mod_put(true, Mod, Bucket, Key, IndexSpecs, Val, Obj, ModState) ->
+    Mod:put(Bucket, Key, IndexSpecs, Val, Obj, ModState);
+do_mod_put(false, Mod, Bucket, Key, IndexSpecs, Val, _Obj, ModState) ->
+    Mod:put(Bucket, Key, IndexSpecs, Val, ModState).
 
 -ifdef(TEST).
 

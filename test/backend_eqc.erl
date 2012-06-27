@@ -567,7 +567,11 @@ postcondition(_From, _To, S,
             finish_fold(Buffer, From)
     end,
     R = receive_fold_results([]),
-    lists:sort(Objects) =:= lists:sort(R);
+    case lists:sort(Objects) =:= lists:sort(R) of
+        true -> true;
+        _ ->
+            [{expected, Objects},{received, R}]
+    end;
 postcondition(_From, _To, S,{call, _M, is_empty, [_BeState]}, R) ->
     R =:= (orddict:size(S#qcst.d) =:= 0);
 postcondition(_From, _To, _S, _C, _R) ->
