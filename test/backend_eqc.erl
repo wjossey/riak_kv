@@ -366,7 +366,14 @@ next_state_data(_From, _To, S, _R, {call, _M, put, [Bucket, Key, IndexSpecs, Val
            i = update_indexes(Bucket, Key, IndexSpecs, S#qcst.i),
            put_list = [{Bucket, Key}|S#qcst.put_list]};
 next_state_data(_From, _To, S, _R, {call, _M, delete, [Bucket, Key|_]}) ->
-    S#qcst{d = orddict:erase({Bucket, Key}, S#qcst.d),
+    NewD1 = orddict:erase({Bucket, Key}, S#qcst.d),
+    NewD2 = try
+                (S#qcst.backend):eqc_filter_delete(Bucket, Key,
+                                                   orddict:to_list(NewD1))
+            catch _:_ ->
+                    NewD1
+            end,
+    S#qcst{d = NewD2,
            i = remove_indexes(Bucket, Key, S#qcst.i)};
 next_state_data(_From, _To, S, R, {call, ?MODULE, drop, _}) ->
     S#qcst{d=orddict:new(),
@@ -441,7 +448,12 @@ postcondition(_From, _To, S,
             finish_fold(Buffer, From)
     end,
     R = receive_fold_results([]),
-    lists:usort(Buckets) =:= lists:sort(R);
+    case lists:usort(Buckets) =:= lists:sort(R) of
+        true ->
+            true;
+        false ->
+            [{expected, lists:usort(Buckets)}, {got, lists:usort(R)}]
+    end;
 postcondition(_From, _To, S,
               {call, _M, fold_keys, [_FoldFun, _Acc, [{index, Bucket,{eq, <<"$bucket">>, _}}], _BeState]}, FoldRes) ->
     ExpectedEntries = orddict:to_list(S#qcst.d),
