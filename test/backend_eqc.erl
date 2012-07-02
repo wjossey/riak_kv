@@ -596,7 +596,7 @@ key_prefix_1() ->
     16.
 
 key_suffix_1() ->
-    16.
+    32.
 
 -endif.
 
