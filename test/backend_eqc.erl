@@ -529,7 +529,7 @@ postcondition(_From, _To, S,
     end;
 postcondition(_From, _To, S,
               {call, _M, fold_keys, [_FoldFun, _Acc, [{bucket, B}], _BeState]}, FoldRes) ->
-    ExpectedEntries = orddict:to_list(S#qcst.d),
+    ExpectedEntries = S#qcst.d,
     Keys = [{Bucket, Key} || {{Bucket, Key}, _} <- ExpectedEntries, Bucket == B],
     From = {raw, foldid, self()},
     case FoldRes of
@@ -540,7 +540,7 @@ postcondition(_From, _To, S,
         {ok, Buffer} ->
             finish_fold(Buffer, From)
     end,
-    R = receive_fold_results([]),
+    R = filter_received_list_keys(receive_fold_results([]), S),
     case lists:sort(Keys) =:= lists:sort(R) of
         true -> true;
         _ ->
@@ -548,7 +548,7 @@ postcondition(_From, _To, S,
     end;
 postcondition(_From, _To, S,
               {call, _M, fold_keys, [_FoldFun, _Acc, _Opts, _BeState]}, FoldRes) ->
-    ExpectedEntries = orddict:to_list(S#qcst.d),
+    ExpectedEntries = S#qcst.d,
     Keys = [{Bucket, Key} || {{Bucket, Key}, _} <- ExpectedEntries],
     From = {raw, foldid, self()},
     case FoldRes of
@@ -559,15 +559,15 @@ postcondition(_From, _To, S,
         {ok, Buffer} ->
             finish_fold(Buffer, From)
     end,
-    R = receive_fold_results([]),
+    R = filter_received_list_keys(receive_fold_results([]), S),
     case lists:sort(Keys) =:= lists:sort(R) of
         true -> true;
         _ ->
-            [{expected, Keys},{received, R}]
+            [{qqqorig, S#qcst.d},{expected, Keys},{received, R}]
     end;
 postcondition(_From, _To, S,
               {call, _M, fold_objects, [_FoldFun, _Acc, _Opts, _BeState]}, FoldRes) ->
-    ExpectedEntries = orddict:to_list(S#qcst.d),
+    ExpectedEntries = S#qcst.d,
     Objects = [Object || Object <- ExpectedEntries],
     From = {raw, foldid, self()},
     case FoldRes of
@@ -597,6 +597,13 @@ key_prefix_1() ->
 
 key_suffix_1() ->
     32.
+
+filter_received_list_keys(Keys, S) ->
+    try
+        (S#qcst.backend):eqc_filter_list_keys(Keys, S#qcst.s)
+    catch _:_ ->
+            Keys
+    end.
 
 -endif.
 
