@@ -2,7 +2,7 @@
 -behaviour(gen_fsm).
 
 %% API
--export([start_link/3]).
+-export([start_link/3, start/3]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3, handle_sync_event/4, handle_info/3,
@@ -12,6 +12,8 @@
 -record(state, {local,
                 remote,
                 index_n,
+                remote_tree,
+                lock,
                 built,
                 missing,
                 from}).
@@ -25,6 +27,9 @@
 
 start_link(LocalVN, RemoteVN, IndexN) ->
     gen_fsm:start_link(?MODULE, [LocalVN, RemoteVN, IndexN], []).
+
+start(LocalVN, RemoteVN, IndexN) ->
+    gen_fsm:start(?MODULE, [LocalVN, RemoteVN, IndexN], []).
 
 sync_start_exchange(Fsm) ->
     gen_fsm:sync_send_event(Fsm, start_exchange, infinity).
@@ -41,10 +46,37 @@ init([LocalVN, RemoteVN, IndexN]) ->
                    remote=RemoteVN,
                    index_n=IndexN,
                    built=0},
-    {ok, update_trees, State}.
+    {ok, start_exchange, State}.
 
-update_trees(start_exchange, From, State) ->
-    update_trees(start_exchange, State#state{from=From}).
+start_exchange(start_exchange, From, State) ->
+    start_exchange(start_exchange, State#state{from=From}).
+
+start_exchange(start_exchange, State=#state{local=LocalVN,
+                                            remote=RemoteVN,
+                                            index_n=IndexN}) ->
+    {Index, _} = LocalVN,
+    case index_hashtree:get_exchange_lock(Index) of
+        {error, max_concurrency} ->
+            lager:info("Exchange: max_concurrency"),
+            {stop, normal, State};
+        {ok, Lock} ->
+            Sender = {fsm, undefined, self()},
+            riak_core_vnode_master:command(RemoteVN,
+                                           {start_exchange_remote, self(), IndexN},
+                                           Sender,
+                                           riak_kv_vnode_master),
+            State2 = State#state{lock=Lock},
+            next_state_with_timeout(start_exchange, State2)
+    end;
+start_exchange(timeout, State) ->
+    do_timeout(State);
+start_exchange({remote_exchange, Pid}, State) when is_pid(Pid) ->
+    State2 = State#state{remote_tree=Pid},
+    update_trees(start_exchange, State2);
+start_exchange({remote_exchange, Error}, State) ->
+    lager:info("Exchange: {remote, ~p}", [Error]),
+    maybe_reply(Error, State),
+    {stop, normal, State}.
 
 update_trees(start_exchange, State=#state{local=LocalVN,
                                           remote=RemoteVN,
@@ -62,13 +94,9 @@ update_trees(start_exchange, State=#state{local=LocalVN,
                                    Sender,
                                    riak_kv_vnode_master),
     next_state_with_timeout(update_trees, State);
-update_trees(timeout,State=#state{local=LocalVN,
-                                  remote=RemoteVN,
-                                  index_n=IndexN}) ->
-    lager:info("Timeout during exchange between (local) ~p and (remote) ~p, "
-               "(preflist) ~p", [LocalVN, RemoteVN, IndexN]),
-    maybe_reply({timeout, RemoteVN, IndexN}, State),
-    {stop, normal, State};
+
+update_trees(timeout, State) ->
+    do_timeout(State);
 update_trees({not_responsible, VNodeIdx, IndexN}, State) ->
     lager:info("VNode ~p does not cover preflist ~p", [VNodeIdx, IndexN]),
     maybe_reply({not_responsible, VNodeIdx, IndexN}, State),
@@ -159,6 +187,14 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+do_timeout(State=#state{local=LocalVN,
+                        remote=RemoteVN,
+                        index_n=IndexN}) ->
+    lager:info("Timeout during exchange between (local) ~p and (remote) ~p, "
+               "(preflist) ~p", [LocalVN, RemoteVN, IndexN]),
+    maybe_reply({timeout, RemoteVN, IndexN}, State),
+    {stop, normal, State}.
 
 maybe_reply(_, #state{from=undefined}) ->
     ok;
