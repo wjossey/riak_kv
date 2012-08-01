@@ -200,13 +200,19 @@ preflist_siblings(Index, N, Ring) ->
 
 maybe_rebuild_hashtrees(State=#state{idx=Index}) ->
     %% TODO: Don't build if not primary
-    RP = responsible_preflists(Index),
-    %% Indices = [Index],
-    {ok, Trees} = index_hashtree:start_link(Index),
-    [index_hashtree:new_tree({Idx,N}, Trees) || {Idx,N} <- RP],
-    %% Hashtrees now build themselves
-    %% index_hashtree:build(Trees),
-    State#state{hashtrees=Trees}.
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    case riak_core_ring:index_owner(Ring, Index) == node() of
+        false ->
+            State;
+        true ->
+            RP = responsible_preflists(Index),
+            %% Indices = [Index],
+            {ok, Trees} = index_hashtree:start_link(Index),
+            [index_hashtree:new_tree({Idx,N}, Trees) || {Idx,N} <- RP],
+            %% Hashtrees now build themselves
+            %% index_hashtree:build(Trees),
+            State#state{hashtrees=Trees}
+    end.
 
 %% API
 start_vnode(I) ->
@@ -473,6 +479,16 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
     do_fold(FoldWrapper, Acc0, Sender, State);
 
 %% exchange commands
+handle_command({start_exchange_remote, FsmPid, IndexN}, Sender, State) ->
+    HT = State#state.hashtrees,
+    case index_hashtree:start_exchange_remote(FsmPid, IndexN, HT) of
+        ok ->
+            riak_core_vnode:reply(Sender, {remote_exchange, HT});
+        Error ->
+            riak_core_vnode:reply(Sender, {remote_exchange, Error})
+    end,
+    {noreply, State};
+
 handle_command({update_tree, IndexN}, Sender, State) ->
     spawn(fun() ->
                   case index_hashtree:update(IndexN, State#state.hashtrees) of

@@ -7,6 +7,10 @@
          compare/2]).
 -compile(export_all).
 
+-include_lib("riak_kv_vnode.hrl").
+-include_lib("riak_kv_map_phase.hrl").
+-include_lib("riak_core/include/riak_core_pb.hrl").
+
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -22,6 +26,7 @@
                 path,
                 itr,
                 dirty_segments}).
+-record(rv, {same = 0, diff = 0, error = 0}).
 
 %%%===================================================================
 %%% API
@@ -349,6 +354,129 @@ expand(V, N, Acc) ->
 %%%===================================================================
 %%% Experiments
 %%%===================================================================
+%% rv() ->
+%%     N = 100,
+%%     A0 = insert_many(N, new()),
+%%     A1 = snapshot(A0),
+%%     rvv(0, A1),
+%%     ok.
+
+reverify(Index, State) ->
+    %% io:format("S: ~p~n", [State]),
+    {ok, Itr} = eleveldb:iterator(State#state.ref, []),
+    State2 = State#state{itr=Itr},
+    State3 = rvv(0, Index, State2),
+    catch eleveldb:iterator_close(State3#state.itr),
+    State3.
+
+rvv(N, Index, T) when N =< ?NUM_SEGMENTS ->
+    [{_, KeyHashes}] = key_hashes(T, N),
+    {T2, Info} =
+        lists:foldl(
+          fun({KBin, Hash}, Acc) ->
+                  {_Id, _Segment, Key} = decode(KBin),
+                  %% io:format("** ~p :: ~p~n", [Index, Key]),
+                  {T2, Acc2} = kv_reverify(Index, Key, Hash, T, Acc),
+                  {T2, Acc2}
+          end, #rv{}, KeyHashes),
+    case KeyHashes of
+        [] ->
+            ok;
+        _ ->
+            lager:info("Reverify ~p/~p: ~b same, ~b diff, ~b missing",
+                       [Index, N, Info#rv.same, Info#rv.diff, Info#rv.error])
+    end,
+    %% case KeyHashes of
+    %%     [] ->
+    %%         %% io:format(".");
+    %%         ok;
+    %%     _ ->
+    %%         %%io:format("*")
+    %%         %% io:format("(~p): ~p~n", [N, KeyHashes])
+    %%         [begin
+    %%              {_Id, _Segment, BinKey} = decode(KBin),
+    %%              Key = binary_to_term(BinKey),
+    %%              io:format("** ~p~n", [Key])
+    %%          end || {KBin,_} <- KeyHashes],
+    %%         ok
+    %% end,
+    rvv(N+1, Index, T2);
+rvv(_, _, T) ->
+    T.
+
+kv_put(Index, BKey={Bucket, Key}, Value) ->
+    VNode = {Index, node()},
+    Ref = make_ref(),
+    %% Sender = {raw, Ref, self()},
+    Sender = ignore,
+    StartTime = riak_core_util:moment(),
+    Obj = riak_object:new(Bucket, Key, Value),
+    Req = ?KV_PUT_REQ{
+             bkey = BKey,
+             object = Obj,
+             req_id = Ref,
+             start_time = StartTime,
+             options = []},
+    riak_core_vnode_master:command(VNode,
+                                   Req,
+                                   Sender,
+                                   riak_kv_vnode_master),
+    ok.
+
+kv_get(Index, BKey) ->
+    VNode = {Index, node()},
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    %% From ! {Ref, Reply};
+
+    Req = ?KV_GET_REQ{bkey=BKey,
+                      req_id=Ref},
+    %% Assuming this function is called from a FSM process
+    %% so self() == FSM pid
+    riak_core_vnode_master:command(VNode,
+                                   Req,
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive
+        %%    {r, VnodeResult, Idx, _ReqId}
+        {Ref, {r, Reply, Index, Ref}} -> Reply
+    end.
+
+kv_reverify(Index, BinKey, Hash, T, Acc) ->
+    %% Main reverify TODO is to make it so that we don't just skip over tree
+    %% if blocked on concurrency or exchanging lock, otherwise we run the risk
+    %% of never handling that tree. Need to reverify all trees before reseting
+    %% list to base case. Maybe keep a list of skipped trees and use that when
+    %% reseting list, use base when empty.
+
+    %% TODO: Deal with n-val changing and thus re-homing of data
+    %%       Probably can just delete object from this tree is no longer member
+
+    %% Interesting. Deleting data then readrepairing seems to generate an object
+    %% with a different hash than original object. Is this correct? Can we avoid it?
+    BKey = binary_to_term(BinKey),
+    case kv_get(Index, BKey) of
+        {ok, RO} ->
+            ROBin = term_to_binary(RO),
+            Rehash = index_hashtree:hash_object(ROBin),
+            %% io:format("** ~p :: ~p :: ~p :: ~p~n", [Index, BKey, Hash, Rehash]),
+            case Rehash of
+                Hash ->
+                    T2 = T,
+                    Acc2 = Acc#rv{same = Acc#rv.same + 1};
+                _ ->
+                    %% TODO: Need to insert new object
+                    %% T2 = insert(BinKey, Rehash, T),
+                    T2 = T,
+                    Acc2 = Acc#rv{diff = Acc#rv.diff + 1}
+            end;
+        _ ->
+            %% TODO: Delete object from tree
+            T2 = T,
+            Acc2 = Acc#rv{error = Acc#rv.error + 1}
+    end,
+    {T2, Acc2}.
+
 run_local() ->
     run_local(10000).
 run_local(N) ->
