@@ -477,7 +477,7 @@ from_index_key(LKey) ->
 %% ===================================================================
 -ifdef(TEST).
 
--include("src/hanoidb.hrl").
+-include_lib("hanoidb/src/hanoidb.hrl").
 
 key_range_test() ->
     Range = to_key_range({bucket, <<"a">>}),
