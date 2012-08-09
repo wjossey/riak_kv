@@ -207,8 +207,8 @@ maybe_rebuild_hashtrees(State=#state{idx=Index}) ->
         true ->
             RP = responsible_preflists(Index),
             %% Indices = [Index],
-            {ok, Trees} = index_hashtree:start_link(Index),
-            [index_hashtree:new_tree({Idx,N}, Trees) || {Idx,N} <- RP],
+            {ok, Trees} = index_hashtree:start_link(Index, RP),
+            %% [index_hashtree:new_tree({Idx,N}, Trees) || {Idx,N} <- RP],
             %% Hashtrees now build themselves
             %% index_hashtree:build(Trees),
             State#state{hashtrees=Trees}

@@ -57,7 +57,8 @@ start_exchange(start_exchange, State=#state{local=LocalVN,
     {Index, _} = LocalVN,
     case index_hashtree:get_exchange_lock(Index) of
         {error, max_concurrency} ->
-            lager:info("Exchange: max_concurrency"),
+            %% lager:info("Exchange: max_concurrency"),
+            maybe_reply(max_concurrency, State),
             {stop, normal, State};
         {ok, Lock} ->
             Sender = {fsm, undefined, self()},
@@ -71,11 +72,12 @@ start_exchange(start_exchange, State=#state{local=LocalVN,
 start_exchange(timeout, State) ->
     do_timeout(State);
 start_exchange({remote_exchange, Pid}, State) when is_pid(Pid) ->
+    maybe_reply(ok, State),
     State2 = State#state{remote_tree=Pid},
     update_trees(start_exchange, State2);
 start_exchange({remote_exchange, Error}, State) ->
-    lager:info("Exchange: {remote, ~p}", [Error]),
-    maybe_reply(Error, State),
+    %% lager:info("Exchange: {remote, ~p}", [Error]),
+    maybe_reply({remote, Error}, State),
     {stop, normal, State}.
 
 update_trees(start_exchange, State=#state{local=LocalVN,
@@ -141,20 +143,28 @@ key_exchange(timeout, State=#state{local=LocalVN,
 
     {keydiff,_,_,KeyDiff} = R,
     Missing = [binary_to_term(BKey) || {_, BKey} <- KeyDiff],
-    [riak_kv_vnode:get([LocalVN, RemoteVN], BKey, make_ref()) || BKey <- Missing],
-    {next_state, test, State#state{missing=Missing}, 1000}.
-
-test(timeout, State=#state{missing=Missing}) ->
     {ok, RC} = riak:local_client(),
     [begin
          lager:info("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
          RC:get(Bucket, Key)
      end || {Bucket, Key} <- Missing],
     maybe_reply(ok, State),
-    {stop, normal, State};
-test(Request, State) ->
-    lager:info("Req: ~p", [Request]),
-    {next_state, test, State, 500}.
+    lager:info("Finished exchange between ~p and ~p", [LocalVN, RemoteVN]),
+    {stop, normal, State}.
+%%     [riak_kv_vnode:get([LocalVN, RemoteVN], BKey, make_ref()) || BKey <- Missing],
+%%     {next_state, test, State#state{missing=Missing}, 1000}.
+
+%% test(timeout, State=#state{missing=Missing}) ->
+%%     {ok, RC} = riak:local_client(),
+%%     [begin
+%%          lager:info("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
+%%          RC:get(Bucket, Key)
+%%      end || {Bucket, Key} <- Missing],
+%%     maybe_reply(ok, State),
+%%     {stop, normal, State};
+%% test(Request, State) ->
+%%     lager:info("Req: ~p", [Request]),
+%%     {next_state, test, State, 500}.
     
 exchange_bucket(VN, IndexN, Level, Bucket) ->
     riak_core_vnode_master:sync_command(VN,
@@ -205,3 +215,8 @@ next_state_with_timeout(StateName, State) ->
     next_state_with_timeout(StateName, State, ?DEFAULT_ACTION_TIMEOUT).
 next_state_with_timeout(StateName, State, Timeout) ->
     {next_state, StateName, State, Timeout}.
+
+%% reply_with_timeout(Reply, StateName, State) ->
+%%     reply_with_timeout(Reply, StateName, State, ?DEFAULT_ACTION_TIMEOUT).
+%% reply_with_timeout(Reply, StateName, State, Timeout) ->
+%%     {reply, Reply, StateName, State, Timeout}.
