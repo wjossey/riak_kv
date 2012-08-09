@@ -69,7 +69,7 @@ insert(Key, ObjHash, State) ->
     Hash = erlang:phash2(Key),
     Segment = Hash rem ?NUM_SEGMENTS,
     HKey = encode(State#state.id, Segment, Key),
-    ok = eleveldb:put(State#state.ref, HKey, ObjHash, []),
+    ok = eleveldb:put(State#state.ref, HKey, ObjHash, [{sync, true}]),
     %% Dirty = gb_sets:add_element(Segment, State#state.dirty_segments),
     Dirty = bitarray_set(Segment, State#state.dirty_segments),
     State#state{dirty_segments=Dirty}.
@@ -112,6 +112,8 @@ compare(Tree, Remote) ->
 
 new_segment_store(State) ->
     Options = [{create_if_missing, true},
+               %% {write_buffer_size, 8*1024},
+               {write_buffer_size, 1024*1024},
                {max_open_files, 20}],
     <<P:128/integer>> = crypto:md5(term_to_binary(erlang:now())),
     DataDir = filename:join(?ROOT, integer_to_list(P)),

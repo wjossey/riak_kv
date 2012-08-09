@@ -30,6 +30,9 @@
 start_link(Index) ->
     gen_server:start_link(?MODULE, [Index], []).
 
+start_link(Index, IndexN) ->
+    gen_server:start_link(?MODULE, [Index, IndexN], []).
+
 new_tree(Id, Tree) ->
     gen_server:call(Tree, {new_tree, Id}, infinity).
 
@@ -67,7 +70,19 @@ init([Index]) ->
     {ok, #state{index=Index,
                 trees=orddict:new(),
                 built=false,
-                exchange_queue=[]}}.
+                exchange_queue=[]}};
+
+init([Index, IndexN]) ->
+    %% schedule_tick(),
+    entropy_manager:register_tree(Index, self()),
+    State = #state{index=Index,
+                   trees=orddict:new(),
+                   built=false,
+                   exchange_queue=[]},
+    State2 = lists:foldl(fun(Id, StateAcc) ->
+                                 do_new_tree(Id, StateAcc)
+                         end, State, IndexN),
+    {ok, State2}.
 
 hash_object(RObjBin) ->
     RObj = binary_to_term(RObjBin),
@@ -102,16 +117,8 @@ fold_keys(Partition, Tree) ->
                                         riak_kv_vnode_master, infinity),
     ok.
 
-handle_call({new_tree, Id}, _From, State=#state{trees=Trees}) ->
-    IdBin = tree_id(Id),
-    NewTree = case Trees of
-                  [] ->
-                      hashtree:new(IdBin);
-                  [{_,Other}|_] ->
-                      hashtree:new(IdBin, Other)
-              end,
-    Trees2 = orddict:store(Id, NewTree, Trees),
-    State2 = State#state{trees=Trees2},
+handle_call({new_tree, Id}, _From, State) ->
+    State2 = do_new_tree(Id, State),
     {reply, ok, State2};
 
 handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
@@ -178,7 +185,7 @@ handle_cast({insert, Id, Key, Hash}, State) ->
     State2 = do_insert(Id, Key, Hash, State),
     {noreply, State2};
 handle_cast({insert_object, BKey, RObj}, State) ->
-    lager:info("Inserting object ~p", [BKey]),
+    %% lager:info("Inserting object ~p", [BKey]),
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     IndexN = get_index_n(BKey, Ring),
     State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), State),
@@ -193,7 +200,6 @@ handle_info(tick, State) ->
 handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging=_Ref,
                                                  index=Index,
                                                  lock=Lock}) ->
-    lager:info("DOWN"),
     (Lock == undefined) orelse release_lock(Index, Lock),
     State2 = State#state{exchanging=undefined,
                          lock=undefined},
@@ -219,6 +225,17 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+do_new_tree(Id, State=#state{trees=Trees}) ->
+    IdBin = tree_id(Id),
+    NewTree = case Trees of
+                  [] ->
+                      hashtree:new(IdBin);
+                  [{_,Other}|_] ->
+                      hashtree:new(IdBin, Other)
+              end,
+    Trees2 = orddict:store(Id, NewTree, Trees),
+    State#state{trees=Trees2}.
+
 apply_tree(Id, Fun, State=#state{trees=Trees}) ->
     case orddict:find(Id, Trees) of
         error ->
@@ -231,7 +248,7 @@ apply_tree(Id, Fun, State=#state{trees=Trees}) ->
     end.
 
 do_insert(Id, Key, Hash, State=#state{trees=Trees}) ->
-    lager:info("Insert into ~p/~p :: ~p / ~p", [State#state.index, Id, Key, Hash]),
+    %% lager:info("Insert into ~p/~p :: ~p / ~p", [State#state.index, Id, Key, Hash]),
     Tree = orddict:fetch(Id, Trees),
     Tree2 = hashtree:insert(Key, Hash, Tree),
     Trees2 = orddict:store(Id, Tree2, Trees),
@@ -292,15 +309,20 @@ all_pairwise_exchanges(Index, Ring) ->
 start_exchange(_, _, _, State) when State#state.exchanging /= undefined ->
     {already_exchanging, State};
 start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
-    lager:info("Starting exchange: ~p", [LocalVN]),
+    %% lager:info("Starting exchange: ~p", [LocalVN]),
     Owner = riak_core_ring:index_owner(Ring, RemoteIdx),
     RemoteVN = {RemoteIdx, Owner},
     case exchange_fsm:start(LocalVN, RemoteVN, IndexN) of
         {ok, FsmPid} ->
-            Ref = monitor(process, FsmPid),
-            State2 = State#state{exchanging=Ref},
-            exchange_fsm:start_exchange(FsmPid),
-            {ok, State2};
+            case exchange_fsm:sync_start_exchange(FsmPid) of
+                ok ->
+                    lager:info("Starting exchange: ~p", [LocalVN]),
+                    Ref = monitor(process, FsmPid),
+                    State2 = State#state{exchanging=Ref},
+                    {ok, State2};
+                Reason ->
+                    {Reason, State}
+            end;
         {error, Reason} ->
             {Reason, State}
     end.
@@ -311,14 +333,14 @@ schedule_tick() ->
 
 do_tick(State) ->
     State2 = maybe_build(State),
-    %% State3 = maybe_exchange(State2),
+    State3 = maybe_exchange(State2),
     %% _X = Index,
-    case State#state.index of
-        0 ->
-            State3 = maybe_reverify(State2);
-        _ ->
-            State3 = State2
-    end,
+    %% case State#state.index of
+    %%     0 ->
+    %%         State3 = maybe_reverify(State2);
+    %%     _ ->
+    %%         State3 = State2
+    %% end,
     State3.
 
 maybe_reverify(State) when State#state.exchanging /= undefined ->
@@ -336,9 +358,9 @@ maybe_reverify(State=#state{index=Index}) ->
     %% Trees2 = orddict:store(Id, Tree2, Trees),
     %% State#state{trees=Trees2}.
 
-            Trees2 = orddict:map(fun({_,Tree}) ->
-                                         hashtree:reverify(Index, Tree)
-                                 end, State#state.trees),
+            _Trees2 = orddict:map(fun({_,Tree}) ->
+                                          hashtree:reverify(Index, Tree)
+                                  end, State#state.trees),
             %% No way to update index_ht with these new Trees2
             %% Probably need to change things to not modify trees in reverify, but have
             %% reverify call do_insert, do_delete on index_ht instead
@@ -372,8 +394,20 @@ maybe_exchange(State=#state{index=Index}) ->
     case start_exchange(LocalVN, NextExchange, Ring, State2) of
         {ok, State3} ->
             State3;
+        {max_concurrency, State3} ->
+            %% lager:info("Requeuing rate limited exchange"),
+            State4 = requeue_exchange(NextExchange, State3),
+            State4;
+        {{remote, max_concurrency}, State3} ->
+            %% lager:info("Requeuing rate limited exchange"),
+            State4 = requeue_exchange(NextExchange, State3),
+            State4;
+        {{remote, already_exchanging}, State3} ->
+            %% lager:info("Requeuing rate limited exchange"),
+            State4 = requeue_exchange(NextExchange, State3),
+            State4;
         {Reason, State3} ->
-            lager:info("Exchange: ~p", [Reason]),
+            lager:info("ExchangeQ: ~p", [Reason]),
             State3
     end.
 %% maybe_exchange(State=#state{index=Index}) ->
@@ -398,14 +432,18 @@ next_exchange(_Ring, State=#state{exchange_queue=Exchanges}) ->
     State2 = State#state{exchange_queue=Rest},
     {Exchange, State2}.
 
+requeue_exchange(Exchange, State) ->
+    Exchanges = State#state.exchange_queue ++ [Exchange],
+    State#state{exchange_queue=Exchanges}.
+
 %% Use global locks for concurrency limits.
 %% TODO: Consider moving towards "exchange/index" manager approach
 get_build_lock(Index) ->
-    Concurrency = 20,
+    Concurrency = 16,
     get_lock(Index, build_token, Concurrency).
 
 get_exchange_lock(Index) ->
-    Concurrency = 1,
+    Concurrency = 3,
     get_lock(Index, concurrency_token, Concurrency).
 
 get_lock(_LockId, _TokenId, 0) ->
