@@ -15,7 +15,8 @@
                 lock,
                 verified,
                 exchange_queue,
-                exchanging :: undefined | reference(), %% Rename since it's not just exchanging (eg. reverify)
+                exchanging :: undefined | {pid(), reference()}, %% Rename since it's not just exchanging (eg. reverify)
+                %% exchanging :: undefined | reference(), %% Rename since it's not just exchanging (eg. reverify)
                 trees}).
 
 -compile(export_all).
@@ -129,7 +130,7 @@ handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
                     {reply, max_concurrency, State};
                 {ok, Lock} ->
                     Ref = monitor(process, FsmPid),
-                    State2 = State#state{exchanging=Ref, lock=Lock},
+                    State2 = State#state{exchanging={FsmPid,Ref}, lock=Lock},
                     {reply, ok, State2}
             end;
         _ ->
@@ -172,6 +173,26 @@ handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
+handle_cast({exchange_status, Pid, RemoteVN, Reply},
+            State=#state{exchanging={FsmPid,_}}) when Pid == FsmPid ->
+    case Reply of
+        max_concurrency ->
+            %% lager:info("Requeuing rate limited exchange"),
+            State2 = requeue_exchange(RemoteVN, State);
+        {remote, max_concurrency} ->
+            %% lager:info("Requeuing rate limited exchange"),
+            State2 = requeue_exchange(RemoteVN, State);
+        {remote, already_exchanging} ->
+            %% lager:info("Requeuing rate limited exchange"),
+            State2 = requeue_exchange(RemoteVN, State);
+        ok ->
+            State2 = State;
+        _ ->
+            lager:info("Exchange status: ~p", [Reply]),
+            State2 = State
+    end,
+    {noreply, State2};
+
 handle_cast(tick, State) ->
     State2 = do_tick(State),
     %% schedule_tick(),
@@ -197,9 +218,9 @@ handle_info(tick, State) ->
     State2 = do_tick(State),
     {noreply, State2};
 
-handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging=_Ref,
-                                                 index=Index,
-                                                 lock=Lock}) ->
+handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging={_Pid,_Ref},
+                                                  index=Index,
+                                                  lock=Lock}) ->
     (Lock == undefined) orelse release_lock(Index, Lock),
     State2 = State#state{exchanging=undefined,
                          lock=undefined},
@@ -314,18 +335,29 @@ start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
     RemoteVN = {RemoteIdx, Owner},
     case exchange_fsm:start(LocalVN, RemoteVN, IndexN) of
         {ok, FsmPid} ->
-            case exchange_fsm:sync_start_exchange(FsmPid) of
-                ok ->
-                    lager:info("Starting exchange: ~p", [LocalVN]),
-                    Ref = monitor(process, FsmPid),
-                    State2 = State#state{exchanging=Ref},
-                    {ok, State2};
-                Reason ->
-                    {Reason, State}
-            end;
+            %% Make this happen automatically as part of init in exchange_fsm
+            %% lager:info("Starting exchange: ~p", [LocalVN]),
+            exchange_fsm:start_exchange(FsmPid, self()),
+            Ref = monitor(process, FsmPid),
+            State2 = State#state{exchanging={FsmPid,Ref}},
+            {ok, State2};
         {error, Reason} ->
             {Reason, State}
     end.
+    %% case exchange_fsm:start(LocalVN, RemoteVN, IndexN) of
+    %%     {ok, FsmPid} ->
+    %%         case exchange_fsm:sync_start_exchange(FsmPid) of
+    %%             ok ->
+    %%                 lager:info("Starting exchange: ~p", [LocalVN]),
+    %%                 Ref = monitor(process, FsmPid),
+    %%                 State2 = State#state{exchanging=Ref},
+    %%                 {ok, State2};
+    %%             Reason ->
+    %%                 {Reason, State}
+    %%         end;
+    %%     {error, Reason} ->
+    %%         {Reason, State}
+    %% end.
 
 schedule_tick() ->
     Tick = ?TICK_TIME,
@@ -369,7 +401,7 @@ maybe_reverify(State=#state{index=Index}) ->
     end
     end),
     Ref = monitor(process, Pid),
-    State#state{exchanging=Ref}.
+    State#state{exchanging={Pid,Ref}}.
             
 maybe_build(State=#state{built=true}) ->
     State;
@@ -394,22 +426,31 @@ maybe_exchange(State=#state{index=Index}) ->
     case start_exchange(LocalVN, NextExchange, Ring, State2) of
         {ok, State3} ->
             State3;
-        {max_concurrency, State3} ->
-            %% lager:info("Requeuing rate limited exchange"),
-            State4 = requeue_exchange(NextExchange, State3),
-            State4;
-        {{remote, max_concurrency}, State3} ->
-            %% lager:info("Requeuing rate limited exchange"),
-            State4 = requeue_exchange(NextExchange, State3),
-            State4;
-        {{remote, already_exchanging}, State3} ->
-            %% lager:info("Requeuing rate limited exchange"),
-            State4 = requeue_exchange(NextExchange, State3),
-            State4;
-        {Reason, State3} ->
-            lager:info("ExchangeQ: ~p", [Reason]),
+        {_Reason, State3} ->
+            %% lager:info("ExchangeQ: ~p", [Reason]),
             State3
     end.
+    %% {ok, State3} = start_exchange(LocalVN, NextExchange, Ring, State2),
+    %% State3.
+    %% case start_exchange(LocalVN, NextExchange, Ring, State2) of
+    %%     {ok, State3} ->
+    %%         State3;
+    %%     {max_concurrency, State3} ->
+    %%         %% lager:info("Requeuing rate limited exchange"),
+    %%         State4 = requeue_exchange(NextExchange, State3),
+    %%         State4;
+    %%     {{remote, max_concurrency}, State3} ->
+    %%         %% lager:info("Requeuing rate limited exchange"),
+    %%         State4 = requeue_exchange(NextExchange, State3),
+    %%         State4;
+    %%     {{remote, already_exchanging}, State3} ->
+    %%         %% lager:info("Requeuing rate limited exchange"),
+    %%         State4 = requeue_exchange(NextExchange, State3),
+    %%         State4;
+    %%     {Reason, State3} ->
+    %%         lager:info("ExchangeQ: ~p", [Reason]),
+    %%         State3
+    %% end.
 %% maybe_exchange(State=#state{index=Index}) ->
 %%     case get_exchange_lock(Index) of
 %%         {error, max_concurrency} ->
@@ -443,7 +484,7 @@ get_build_lock(Index) ->
     get_lock(Index, build_token, Concurrency).
 
 get_exchange_lock(Index) ->
-    Concurrency = 3,
+    Concurrency = 8,
     get_lock(Index, concurrency_token, Concurrency).
 
 get_lock(_LockId, _TokenId, 0) ->
