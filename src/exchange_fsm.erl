@@ -35,7 +35,10 @@ sync_start_exchange(Fsm) ->
     gen_fsm:sync_send_event(Fsm, start_exchange, infinity).
 
 start_exchange(Fsm) ->
-    gen_fsm:send_event(Fsm, start_exchange).
+    start_exchange(Fsm, undefined).
+
+start_exchange(Fsm, Pid) ->
+    gen_fsm:send_event(Fsm, {start_exchange, Pid}).
 
 %%%===================================================================
 %%% gen_fsm callbacks
@@ -46,14 +49,17 @@ init([LocalVN, RemoteVN, IndexN]) ->
                    remote=RemoteVN,
                    index_n=IndexN,
                    built=0},
-    {ok, start_exchange, State}.
+    {ok, prepare_exchange, State}.
 
-start_exchange(start_exchange, From, State) ->
-    start_exchange(start_exchange, State#state{from=From}).
+prepare_exchange(start_exchange, From, State) ->
+    prepare_exchange(start_exchange, State#state{from=From}).
 
-start_exchange(start_exchange, State=#state{local=LocalVN,
-                                            remote=RemoteVN,
-                                            index_n=IndexN}) ->
+prepare_exchange({start_exchange, From}, State) ->
+    prepare_exchange(start_exchange, State#state{from=From});
+
+prepare_exchange(start_exchange, State=#state{local=LocalVN,
+                                              remote=RemoteVN,
+                                              index_n=IndexN}) ->
     {Index, _} = LocalVN,
     case index_hashtree:get_exchange_lock(Index) of
         {error, max_concurrency} ->
@@ -67,15 +73,15 @@ start_exchange(start_exchange, State=#state{local=LocalVN,
                                            Sender,
                                            riak_kv_vnode_master),
             State2 = State#state{lock=Lock},
-            next_state_with_timeout(start_exchange, State2)
+            next_state_with_timeout(prepare_exchange, State2)
     end;
-start_exchange(timeout, State) ->
+prepare_exchange(timeout, State) ->
     do_timeout(State);
-start_exchange({remote_exchange, Pid}, State) when is_pid(Pid) ->
-    maybe_reply(ok, State),
-    State2 = State#state{remote_tree=Pid},
-    update_trees(start_exchange, State2);
-start_exchange({remote_exchange, Error}, State) ->
+prepare_exchange({remote_exchange, Pid}, State) when is_pid(Pid) ->
+    State2 = maybe_reply(ok, State),
+    State3 = State2#state{remote_tree=Pid},
+    update_trees(start_exchange, State3);
+prepare_exchange({remote_exchange, Error}, State) ->
     %% lager:info("Exchange: {remote, ~p}", [Error]),
     maybe_reply({remote, Error}, State),
     {stop, normal, State}.
@@ -206,10 +212,15 @@ do_timeout(State=#state{local=LocalVN,
     maybe_reply({timeout, RemoteVN, IndexN}, State),
     {stop, normal, State}.
 
-maybe_reply(_, #state{from=undefined}) ->
-    ok;
-maybe_reply(Reply, #state{from=From}) ->
-    gen_fsm:reply(From, Reply).
+maybe_reply(_, State=#state{from=undefined}) ->
+    ok,
+    State;
+maybe_reply(Reply, State=#state{from=Pid, remote=RemoteVN}) when is_pid(Pid) ->
+    gen_server:cast(Pid, {exchange_status, self(), RemoteVN, Reply}),
+    State#state{from=undefined};
+maybe_reply(Reply, State=#state{from=From}) ->
+    gen_fsm:reply(From, Reply),
+    State#state{from=undefined}.
 
 next_state_with_timeout(StateName, State) ->
     next_state_with_timeout(StateName, State, ?DEFAULT_ACTION_TIMEOUT).
