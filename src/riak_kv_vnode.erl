@@ -222,16 +222,13 @@ test_vnode(I) ->
     riak_core_vnode:start_link(riak_kv_vnode, I, infinity).
 
 get(Preflist, BKey, ReqId) ->
-    %% Assuming this function is called from a FSM process
-    %% so self() == FSM pid
-    get(Preflist, BKey, ReqId, {fsm, undefined, self()}).
-
-get(Preflist, BKey, ReqId, Sender) ->
     Req = ?KV_GET_REQ{bkey=BKey,
                       req_id=ReqId},
+    %% Assuming this function is called from a FSM process
+    %% so self() == FSM pid
     riak_core_vnode_master:command(Preflist,
                                    Req,
-                                   Sender,
+                                   {fsm, undefined, self()},
                                    riak_kv_vnode_master).
 
 mget(Preflist, BKeys, ReqId) ->
@@ -264,29 +261,6 @@ put(Preflist, BKey, Obj, ReqId, StartTime, Options, Sender)
                                       options = Options},
                                    Sender,
                                    riak_kv_vnode_master).
-
-direct_put(Index, Obj) ->
-    BKey = {riak_object:bucket(Obj), riak_object:key(Obj)},
-    Ref = make_ref(),
-    ReqId = Ref,
-    StartTime = riak_core_util:moment(),
-    Options = [],
-    Sender = {raw, Ref, self()},
-    put({Index, node()}, BKey, Obj, ReqId, StartTime, Options, Sender),
-    receive
-        {Ref, Reply} ->
-            Reply
-    end.
-
-direct_get(Index, BKey) ->
-    Ref = make_ref(),
-    ReqId = Ref,
-    Sender = {raw, Ref, self()},
-    get({Index,node()}, BKey, ReqId, Sender),
-    receive
-        {Ref, Reply} ->
-            Reply
-    end.
 
 %% Issue a put for the object to the preflist, expecting a reply
 %% to an FSM.
