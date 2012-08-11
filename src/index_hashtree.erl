@@ -12,8 +12,10 @@
 
 -record(state, {index,
                 built,
+                seq_id,
                 lock,
                 verified,
+                path,
                 exchange_queue,
                 exchanging :: undefined | {pid(), reference()}, %% Rename since it's not just exchanging (eg. reverify)
                 %% exchanging :: undefined | reference(), %% Rename since it's not just exchanging (eg. reverify)
@@ -67,24 +69,66 @@ compare(Id, Remote, Tree) ->
 
 init([Index]) ->
     %% schedule_tick(),
+    Root = "data/anti",
+    Path = filename:join(Root, integer_to_list(Index)),
+
     entropy_manager:register_tree(Index, self()),
     {ok, #state{index=Index,
                 trees=orddict:new(),
                 built=false,
+                path=Path,
                 exchange_queue=[]}};
 
 init([Index, IndexN]) ->
     %% schedule_tick(),
+    Root = "data/anti",
+    Path = filename:join(Root, integer_to_list(Index)),
+
     entropy_manager:register_tree(Index, self()),
     State = #state{index=Index,
                    trees=orddict:new(),
                    built=false,
+                   path=Path,
                    exchange_queue=[]},
     State2 = lists:foldl(fun(Id, StateAcc) ->
                                  do_new_tree(Id, StateAcc)
                          end, State, IndexN),
-    {ok, State2}.
+    {_,Tree0} = hd(State2#state.trees),
+    Built = load_built(Tree0),
+    SeqId = load_sequence_id(Tree0),
+    lager:info("~p: Built/SeqId :: ~p/~p", [Index, Built, SeqId]),
+    {ok, State2#state{built=Built, seq_id=SeqId}}.
 
+load_built(Tree0) ->
+    case hashtree:read_meta(<<"built">>, Tree0) of
+        {ok, <<1>>} ->
+            true;
+        _ ->
+            false
+    end.
+
+load_sequence_id(Tree0) ->
+    case hashtree:read_meta(<<"sequence_id">>, Tree0) of
+        {ok, <<SeqId/integer>>} ->
+            SeqId;
+        _ ->
+            0
+    end.
+
+increment_sequence_id(State=#state{trees=Trees, seq_id=SeqId}) ->
+    {_,Tree0} = hd(Trees),
+    NewSeqId = SeqId + 1,
+    hashtree:write_meta(<<"sequence_id">>, <<NewSeqId/integer>>, Tree0),
+    State#state{seq_id=NewSeqId}.
+
+write_sequence_id_to_kv(#state{index=Index, seq_id=SeqId}) ->
+    RO = riak_object:new(<<"com.basho.riak">>,
+                         <<"anti_sequence_", Index/integer>>,
+                         SeqId),
+    R = riak_kv_vnode:direct_put(Index, RO),
+    lager:info("R: ~p", [R]),
+    ok.
+    
 hash_object(RObjBin) ->
     RObj = binary_to_term(RObjBin),
     Vclock = riak_object:vclock(RObj),
@@ -139,11 +183,19 @@ handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
 
 handle_call({update_tree, Id}, _From, State) ->
     lager:info("Updating tree: (vnode)=~p (preflist)=~p", [State#state.index, Id]),
-    apply_tree(Id,
-               fun(Tree) ->
-                       {ok, hashtree:update_tree(Tree)}
-               end,
-               State);
+    Result = apply_tree(Id,
+                        fun(Tree) ->
+                                {ok, hashtree:update_tree(Tree)}
+                        end,
+                        State),
+    case Result of
+        {reply, ok, State2} ->
+            State3 = increment_sequence_id(State2),
+            write_sequence_id_to_kv(State3),
+            {reply, ok, State3};
+        _ ->
+            Result
+    end;
 
 handle_call({exchange_bucket, Id, Level, Bucket}, _From, State) ->
     apply_tree(Id,
@@ -246,11 +298,11 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-do_new_tree(Id, State=#state{trees=Trees}) ->
+do_new_tree(Id, State=#state{trees=Trees, path=Path}) ->
     IdBin = tree_id(Id),
     NewTree = case Trees of
                   [] ->
-                      hashtree:new(IdBin);
+                      hashtree:new(IdBin, [{segment_path, Path}]);
                   [{_,Other}|_] ->
                       hashtree:new(IdBin, Other)
               end,
@@ -413,6 +465,8 @@ maybe_build(State=#state{index=Index}) ->
             lager:info("Starting build: ~p", [Index]),
             fold_keys(Index, self()),
             lager:info("Finished build: ~p", [Index]),
+            {_,Tree0} = hd(State#state.trees),
+            hashtree:write_meta(<<"built">>, <<1>>, Tree0),
             release_lock(Index, Lock),
             State#state{built=true}
     end.
