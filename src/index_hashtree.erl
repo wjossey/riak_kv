@@ -12,7 +12,6 @@
 
 -record(state, {index,
                 built,
-                seq_id,
                 lock,
                 verified,
                 path,
@@ -93,13 +92,11 @@ init([Index, IndexN]) ->
     State2 = lists:foldl(fun(Id, StateAcc) ->
                                  do_new_tree(Id, StateAcc)
                          end, State, IndexN),
-    {_,Tree0} = hd(State2#state.trees),
-    Built = load_built(Tree0),
-    SeqId = load_sequence_id(Tree0),
-    lager:info("~p: Built/SeqId :: ~p/~p", [Index, Built, SeqId]),
-    {ok, State2#state{built=Built, seq_id=SeqId}}.
+    Built = load_built(State2),
+    {ok, State2#state{built=Built}}.
 
-load_built(Tree0) ->
+load_built(#state{trees=Trees}) ->
+    {_,Tree0} = hd(Trees),
     case hashtree:read_meta(<<"built">>, Tree0) of
         {ok, <<1>>} ->
             true;
@@ -107,28 +104,6 @@ load_built(Tree0) ->
             false
     end.
 
-load_sequence_id(Tree0) ->
-    case hashtree:read_meta(<<"sequence_id">>, Tree0) of
-        {ok, <<SeqId/integer>>} ->
-            SeqId;
-        _ ->
-            0
-    end.
-
-increment_sequence_id(State=#state{trees=Trees, seq_id=SeqId}) ->
-    {_,Tree0} = hd(Trees),
-    NewSeqId = SeqId + 1,
-    hashtree:write_meta(<<"sequence_id">>, <<NewSeqId/integer>>, Tree0),
-    State#state{seq_id=NewSeqId}.
-
-write_sequence_id_to_kv(#state{index=Index, seq_id=SeqId}) ->
-    RO = riak_object:new(<<"com.basho.riak">>,
-                         <<"anti_sequence_", Index/integer>>,
-                         SeqId),
-    R = riak_kv_vnode:direct_put(Index, RO),
-    lager:info("R: ~p", [R]),
-    ok.
-    
 hash_object(RObjBin) ->
     RObj = binary_to_term(RObjBin),
     Vclock = riak_object:vclock(RObj),
@@ -183,19 +158,11 @@ handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
 
 handle_call({update_tree, Id}, _From, State) ->
     lager:info("Updating tree: (vnode)=~p (preflist)=~p", [State#state.index, Id]),
-    Result = apply_tree(Id,
-                        fun(Tree) ->
-                                {ok, hashtree:update_tree(Tree)}
-                        end,
-                        State),
-    case Result of
-        {reply, ok, State2} ->
-            State3 = increment_sequence_id(State2),
-            write_sequence_id_to_kv(State3),
-            {reply, ok, State3};
-        _ ->
-            Result
-    end;
+    apply_tree(Id,
+               fun(Tree) ->
+                       {ok, hashtree:update_tree(Tree)}
+               end,
+               State);
 
 handle_call({exchange_bucket, Id, Level, Bucket}, _From, State) ->
     apply_tree(Id,
