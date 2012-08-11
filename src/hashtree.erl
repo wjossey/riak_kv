@@ -18,7 +18,6 @@
 -define(NUM_SEGMENTS, (1024*1024)).
 -define(WIDTH, 1024).
 -define(MEM_LEVELS, 4).
--define(ROOT, "/tmp/anti/level").
 
 -record(state, {id,
                 levels,
@@ -39,11 +38,11 @@ new() ->
     new(0).
 
 new(TreeId) ->
-    State = new_segment_store(#state{}),
+    State = new_segment_store([], #state{}),
     new(TreeId, State, []).
 
 new(TreeId, Options) when is_list(Options) ->
-    State = new_segment_store(#state{}),
+    State = new_segment_store(Options, #state{}),
     new(TreeId, State, Options);
 new(TreeId, LinkedStore = #state{}) ->
     new(TreeId, LinkedStore, []).
@@ -133,16 +132,39 @@ width(#state{width=W}) ->
 mem_levels(#state{mem_levels=M}) ->
     M.
 
+%% Note: meta is currently a one per file thing, even if there are multiple
+%%       trees per file. This is intentional. If we want per tree metadata
+%%       this will need to be added as a separate thing.
+write_meta(Key, Value, State) when is_binary(Key) and is_binary(Value) ->
+    HKey = encode_meta(Key),
+    ok = eleveldb:put(State#state.ref, HKey, Value, []),
+    State.
+
+read_meta(Key, State) when is_binary(Key) ->
+    HKey = encode_meta(Key),
+    case eleveldb:get(State#state.ref, HKey, []) of
+        {ok, Value} ->
+            {ok, Value};
+        _ ->
+            undefined
+    end.
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
-new_segment_store(State) ->
+new_segment_store(Opts, State) ->
+    DataDir = case proplists:get_value(segment_path, Opts) of
+                  undefined ->
+                      Root = "/tmp/anti/level",
+                      <<P:128/integer>> = crypto:md5(term_to_binary(erlang:now())),
+                      filename:join(Root, integer_to_list(P));
+                  SegmentPath ->
+                      SegmentPath
+              end,
     Options = [{create_if_missing, true},
                {write_buffer_size, 1024*1024},
                {max_open_files, 20}],
-    <<P:128/integer>> = crypto:md5(term_to_binary(erlang:now())),
-    DataDir = filename:join(?ROOT, integer_to_list(P)),
     filelib:ensure_dir(DataDir),
     {ok, Ref} = eleveldb:open(DataDir, Options),
     State#state{ref=Ref, path=DataDir}.
@@ -230,14 +252,17 @@ set_disk_bucket(Level, Bucket, Val, State=#state{id=Id, ref=Ref}) ->
     State.
 
 encode(TreeId, Segment, Key) ->
-    <<TreeId:22/binary,$s,Segment:64/integer,Key/binary>>.
+    <<$t,TreeId:22/binary,$s,Segment:64/integer,Key/binary>>.
 
 decode(Bin) ->
-    <<TreeId:22/binary,$s,Segment:64/integer,Key/binary>> = Bin,
+    <<$t,TreeId:22/binary,$s,Segment:64/integer,Key/binary>> = Bin,
     {TreeId, Segment, Key}.
 
 encode_bucket(TreeId, Level, Bucket) ->
-    <<TreeId:22/binary,$b,Level:64/integer,Bucket:64/integer>>.
+    <<$t,TreeId:22/binary,$b,Level:64/integer,Bucket:64/integer>>.
+
+encode_meta(Key) ->
+    <<$m,Key/binary>>.
 
 hashes(State, Segments) ->
     multi_select_segment(State, Segments, fun hash/1).
