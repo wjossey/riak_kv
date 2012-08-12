@@ -76,17 +76,42 @@ encode_id(_) ->
     erlang:error(badarg).
 
 destroy(State) ->
-    eleveldb:destroy(State#state.path, []),
+    eleveldb:close(State#state.ref),
+    ok = eleveldb:destroy(State#state.path, []),
     State.
 
 insert(Key, ObjHash, State) ->
+    insert(Key, ObjHash, State, []).
+
+insert(Key, ObjHash, State, Opts) ->
     Hash = erlang:phash2(Key),
     Segment = Hash rem ?NUM_SEGMENTS,
     HKey = encode(State#state.id, Segment, Key),
-    ok = eleveldb:put(State#state.ref, HKey, ObjHash, []),
-    %% Dirty = gb_sets:add_element(Segment, State#state.dirty_segments),
-    Dirty = bitarray_set(Segment, State#state.dirty_segments),
-    State#state{dirty_segments=Dirty}.
+    case should_insert(HKey, Opts, State) of
+        true ->
+            ok = eleveldb:put(State#state.ref, HKey, ObjHash, []),
+            %% Dirty = gb_sets:add_element(Segment, State#state.dirty_segments),
+            Dirty = bitarray_set(Segment, State#state.dirty_segments),
+            State#state{dirty_segments=Dirty};
+        false ->
+            State
+    end.
+
+should_insert(HKey, Opts, State) ->
+    IfMissing = proplists:get_value(if_missing, Opts, false),
+    case IfMissing of
+        true ->
+            %% Only insert if object does not already exist
+            %% TODO: Use bloom filter so we don't always call get here
+            case eleveldb:get(State#state.ref, HKey, []) of
+                not_found ->
+                    true;
+                _ ->
+                    false
+            end;
+        _ ->
+            true
+    end.
 
 update_tree(State=#state{dirty_segments=Dirty}) ->
     %% Segments = gb_sets:to_list(Dirty),
