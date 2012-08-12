@@ -39,7 +39,10 @@ new_tree(Id, Tree) ->
     gen_server:call(Tree, {new_tree, Id}, infinity).
 
 insert(Id, Key, Hash, Tree) ->
-    gen_server:cast(Tree, {insert, Id, Key, Hash}).
+    insert(Id, Key, Hash, Tree, []).
+
+insert(Id, Key, Hash, Tree, Options) ->
+    gen_server:cast(Tree, {insert, Id, Key, Hash, Options}).
 
 insert_object(BKey, RObj, Tree) ->
     gen_server:cast(Tree, {insert_object, BKey, RObj}).
@@ -89,11 +92,15 @@ init([Index, IndexN]) ->
                    built=false,
                    path=Path,
                    exchange_queue=[]},
+    State2 = init_trees(IndexN, State),
+    {ok, State2}.
+
+init_trees(IndexN, State) ->
     State2 = lists:foldl(fun(Id, StateAcc) ->
                                  do_new_tree(Id, StateAcc)
                          end, State, IndexN),
     Built = load_built(State2),
-    {ok, State2#state{built=Built}}.
+    State2#state{built=Built}.
 
 load_built(#state{trees=Trees}) ->
     {_,Tree0} = hd(Trees),
@@ -115,7 +122,8 @@ fold_keys(Partition, Tree) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Req = ?FOLD_REQ{foldfun=fun(BKey={Bucket,Key}, RObj, _) ->
                                     IndexN = get_index_n({Bucket, Key}, Ring),
-                                    insert(IndexN, term_to_binary(BKey), hash_object(RObj), Tree),
+                                    insert(IndexN, term_to_binary(BKey), hash_object(RObj),
+                                           Tree, [if_missing]),
                                     ok
                             end,
                     acc0=ok},
@@ -142,8 +150,10 @@ handle_call({new_tree, Id}, _From, State) ->
     {reply, ok, State2};
 
 handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
-    case State#state.exchanging of
-        undefined ->
+    case {State#state.built == true, State#state.exchanging} of
+        {false, _} ->
+            {reply, not_built, State};
+        {true, undefined} ->
             case get_exchange_lock(State#state.index) of
                 {error, max_concurrency} ->
                     {reply, max_concurrency, State};
@@ -221,14 +231,18 @@ handle_cast(build, State) ->
     State2 = maybe_build(State),
     {noreply, State2};
 
-handle_cast({insert, Id, Key, Hash}, State) ->
-    State2 = do_insert(Id, Key, Hash, State),
+handle_cast(build_finished, State) ->
+    State2 = do_build_finished(State),
+    {noreply, State2};
+
+handle_cast({insert, Id, Key, Hash, Options}, State) ->
+    State2 = do_insert(Id, Key, Hash, Options, State),
     {noreply, State2};
 handle_cast({insert_object, BKey, RObj}, State) ->
     %% lager:info("Inserting object ~p", [BKey]),
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     IndexN = get_index_n(BKey, Ring),
-    State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), State),
+    State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), [], State),
     {noreply, State2};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -287,12 +301,38 @@ apply_tree(Id, Fun, State=#state{trees=Trees}) ->
             {reply, Result, State2}
     end.
 
-do_insert(Id, Key, Hash, State=#state{trees=Trees}) ->
+do_build_finished(State=#state{index=Index, built={Lock,_Pid}}) ->
+    lager:info("Finished build (b): ~p", [Index]),
+    release_lock(Index, Lock),
+    {_,Tree0} = hd(State#state.trees),
+    hashtree:write_meta(<<"built">>, <<1>>, Tree0),
+    State#state{built=true}.
+
+do_insert(Id, Key, Hash, Opts, State=#state{trees=Trees}) ->
     %% lager:info("Insert into ~p/~p :: ~p / ~p", [State#state.index, Id, Key, Hash]),
-    Tree = orddict:fetch(Id, Trees),
-    Tree2 = hashtree:insert(Key, Hash, Tree),
-    Trees2 = orddict:store(Id, Tree2, Trees),
-    State#state{trees=Trees2}.
+    case orddict:find(Id, Trees) of
+        {ok, Tree} ->
+            Tree2 = hashtree:insert(Key, Hash, Tree, Opts),
+            Trees2 = orddict:store(Id, Tree2, Trees),
+            State#state{trees=Trees2};
+        _ ->
+            handle_unexpected_key(Id, Key, State),
+            State
+    end.
+
+handle_unexpected_key(Id, Key, #state{index=Partition}) ->
+    RP = riak_kv_vnode:responsible_preflists(Partition),
+    case lists:member(Id, RP) of
+        false ->
+            lager:warning("Object ~p encountered during fold over partition "
+                          "~p, but key does not hash to an index handled by "
+                          "this partition", [Key, Partition]),
+            ok;
+        true ->
+            lager:info("Partition/tree ~p/~p does not exist to hold object ~p",
+                       [Partition, Id, Key]),
+            ok
+    end.
 
 tree_id({Index, N}) ->
     %% hashtree is hardcoded for 22-byte (176-bit) tree id
@@ -346,6 +386,8 @@ all_pairwise_exchanges(Index, Ring) ->
               [{RemoteIdx, IndexN} || IndexN <- SharedIndexN]
       end, Sibs).
 
+start_exchange(_, _, _, State) when State#state.built /= true ->
+    {not_built, State};
 start_exchange(_, _, _, State) when State#state.exchanging /= undefined ->
     {already_exchanging, State};
 start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
@@ -383,7 +425,8 @@ schedule_tick() ->
     timer:apply_after(Tick, gen_server, cast, [self(), tick]).
 
 do_tick(State) ->
-    State2 = maybe_build(State),
+    State1 = maybe_clear(State),
+    State2 = maybe_build(State1),
     State3 = maybe_exchange(State2),
     %% _X = Index,
     %% case State#state.index of
@@ -393,6 +436,18 @@ do_tick(State) ->
     %%         State3 = State2
     %% end,
     State3.
+
+maybe_clear(State=#state{exchanging=undefined, built=true, trees=Trees}) ->
+    lager:info("Clearing tree ~p", [State#state.index]),
+    {_,Tree0} = hd(Trees),
+    hashtree:destroy(Tree0),
+    %% TODO: Consider re-generating reponsible preflists here to determine
+    %%       IndexN. Could also solve bucket prop change issue.
+    {IndexN,_} = lists:unzip(Trees),
+    State2 = init_trees(IndexN, State#state{trees=orddict:new()}),
+    State2#state{built=false};
+maybe_clear(State) ->
+    State.
 
 maybe_reverify(State) when State#state.exchanging /= undefined ->
     State;
@@ -421,8 +476,18 @@ maybe_reverify(State=#state{index=Index}) ->
     end),
     Ref = monitor(process, Pid),
     State#state{exchanging={Pid,Ref}}.
-            
+
 maybe_build(State=#state{built=true}) ->
+    State;
+%% maybe_build(State=#state{index=Index, built={Lock,Pid}}) ->
+maybe_build(State=#state{built={_Lock,_Pid}}) ->
+    %% case is_process_alive(Pid) of
+    %%     false ->
+    %%         release_lock(Index, Lock),
+    %%         State#state{built=false};
+    %%     true ->
+    %%         State
+    %% end;
     State;
 maybe_build(State=#state{index=Index}) ->
     case get_build_lock(Index) of
@@ -436,6 +501,13 @@ maybe_build(State=#state{index=Index}) ->
             hashtree:write_meta(<<"built">>, <<1>>, Tree0),
             release_lock(Index, Lock),
             State#state{built=true}
+            %% Self = self(),
+            %% Pid = spawn_link(fun() ->
+            %%                          fold_keys(Index, Self),
+            %%                          lager:info("Finished build (a): ~p", [Index]),
+            %%                          gen_server:cast(Self, build_finished)
+            %%                  end),
+            %% State#state{built={Lock,Pid}}
     end.
 
 maybe_exchange(State=#state{index=Index}) ->
