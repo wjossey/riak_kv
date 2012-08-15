@@ -12,10 +12,9 @@
 
 -record(state, {index,
                 built,
-                lock,
+                lock :: undefined | reference(),
                 path,
                 exchange_queue,
-                exchanging :: undefined | {pid(), reference()},
                 trees}).
 
 -compile(export_all).
@@ -62,6 +61,12 @@ exchange_segment(Id, Segment, Tree) ->
 
 compare(Id, Remote, Tree) ->
     gen_server:call(Tree, {compare, Id, Remote}, infinity).
+
+get_lock(Tree, Type) ->
+    get_lock(Tree, Type, self()).
+
+get_lock(Tree, Type, Pid) ->
+    gen_server:call(Tree, {get_lock, Type, Pid}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -134,21 +139,21 @@ handle_call({new_tree, Id}, _From, State) ->
     State2 = do_new_tree(Id, State),
     {reply, ok, State2};
 
+handle_call({get_lock, Type, Pid}, _From, State) ->
+    {Reply, State2} = do_get_lock(Type, Pid, State),
+    {reply, Reply, State2};
+
 handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
-    case {State#state.built == true, State#state.exchanging} of
-        {false, _} ->
-            {reply, not_built, State};
-        {true, undefined} ->
-            case entropy_manager:get_lock(exchange_remote, FsmPid) of
-                max_concurrency ->
-                    {reply, max_concurrency, State};
-                ok ->
-                    Ref = monitor(process, FsmPid),
-                    State2 = State#state{exchanging={FsmPid,Ref}},
-                    {reply, ok, State2}
-            end;
-        _ ->
-            {reply, already_exchanging, State}
+    case entropy_manager:get_lock(exchange_remote, FsmPid) of
+        max_concurrency ->
+            {reply, max_concurrency, State};
+        ok ->
+            case do_get_lock(remote_fsm, FsmPid, State) of
+                {ok, State2} ->
+                    {reply, ok, State2};
+                {Reply, State2} ->
+                    {reply, Reply, State2}
+            end
     end;
 
 handle_call({update_tree, Id}, _From, State) ->
@@ -187,8 +192,10 @@ handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
-handle_cast({exchange_status, Pid, RemoteVN, Reply},
-            State=#state{exchanging={FsmPid,_}}) when Pid == FsmPid ->
+%% handle_cast({exchange_status, Pid, RemoteVN, Reply},
+%%             State=#state{exchanging={FsmPid,_}}) when Pid == FsmPid ->
+handle_cast({exchange_status, _Pid, RemoteVN, Reply}, State) ->
+    %% lager:info("S: ~p", [Reply]),
     case Reply of
         max_concurrency ->
             %% lager:info("Requeuing rate limited exchange"),
@@ -216,6 +223,9 @@ handle_cast(build, State) ->
     State2 = maybe_build(State),
     {noreply, State2};
 
+handle_cast(build_failed, State) ->
+    State2 = State#state{built=false},
+    {noreply, State2};
 handle_cast(build_finished, State) ->
     State2 = do_build_finished(State),
     {noreply, State2};
@@ -236,16 +246,9 @@ handle_info(tick, State) ->
     State2 = do_tick(State),
     {noreply, State2};
 
-handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging={_Pid,_Ref}}) ->
-    State2 = State#state{exchanging=undefined},
+handle_info({'DOWN', Ref, _, _, _}, State) ->
+    State2 = maybe_release_lock(Ref, State),
     {noreply, State2};
-%% handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging={_Pid,_Ref},
-%%                                                   index=Index,
-%%                                                   lock=Lock}) ->
-%%     (Lock == undefined) orelse release_lock(Index, Lock),
-%%     State2 = State#state{exchanging=undefined,
-%%                          lock=undefined},
-%%     {noreply, State2};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -269,6 +272,27 @@ do_new_tree(Id, State=#state{trees=Trees, path=Path}) ->
               end,
     Trees2 = orddict:store(Id, NewTree, Trees),
     State#state{trees=Trees2}.
+
+do_get_lock(_, _, State) when State#state.built /= true ->
+    lager:info("Not built: ~p :: ~p", [State#state.index, State#state.built]),
+    {not_built, State};
+do_get_lock(_Type, Pid, State=#state{lock=undefined}) ->
+    Ref = monitor(process, Pid),
+    State2 = State#state{lock=Ref},
+    %% lager:info("Locked: ~p", [State#state.index]),
+    {ok, State2};
+do_get_lock(_, _, State) ->
+    lager:info("Already locked: ~p", [State#state.index]),
+    {already_locked, State}.
+
+maybe_release_lock(Ref, State) ->
+    case State#state.lock of
+        Ref ->
+            %% lager:info("Unlocked: ~p", [State#state.index]),
+            State#state{lock=undefined};
+        _ ->
+            State
+    end.
 
 apply_tree(Id, Fun, State=#state{trees=Trees}) ->
     case orddict:find(Id, Trees) of
@@ -367,7 +391,7 @@ all_pairwise_exchanges(Index, Ring) ->
 
 start_exchange(_, _, _, State) when State#state.built /= true ->
     {not_built, State};
-start_exchange(_, _, _, State) when State#state.exchanging /= undefined ->
+start_exchange(_, _, _, State) when State#state.lock /= undefined ->
     {already_exchanging, State};
 start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
     %% lager:info("Starting exchange: ~p", [LocalVN]),
@@ -378,9 +402,7 @@ start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
             %% Make this happen automatically as part of init in exchange_fsm
             %% lager:info("Starting exchange: ~p", [LocalVN]),
             exchange_fsm:start_exchange(FsmPid, self()),
-            Ref = monitor(process, FsmPid),
-            State2 = State#state{exchanging={FsmPid,Ref}},
-            {ok, State2};
+            {ok, State};
         {error, Reason} ->
             {Reason, State}
     end.
@@ -395,7 +417,7 @@ do_tick(State) ->
     State3 = maybe_exchange(State2),
     State3.
 
-maybe_clear(State=#state{exchanging=undefined, built=true, trees=Trees}) ->
+maybe_clear(State=#state{lock=undefined, built=true, trees=Trees}) ->
     lager:info("Clearing tree ~p", [State#state.index]),
     {_,Tree0} = hd(Trees),
     hashtree:destroy(Tree0),
