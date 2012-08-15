@@ -512,8 +512,7 @@ send_inputs(Pipe, Inputs) ->
 -spec send_inputs(riak_pipe:pipe(), input(), timeout()) ->
          ok | term().
 send_inputs(Pipe, BucketKeyList, _Timeout) when is_list(BucketKeyList) ->
-    [riak_pipe:queue_work(Pipe, BKey)
-     || BKey <- BucketKeyList],
+    {ok, []} = riak_pipe:queue_work_list(Pipe, BucketKeyList),
     riak_pipe:eoi(Pipe),
     ok;
 send_inputs(Pipe, Bucket, Timeout) when is_binary(Bucket) ->
@@ -576,20 +575,18 @@ send_key_list(Pipe, Bucket, ReqId) ->
     receive
         {ReqId, {keys, Keys}} ->
             %% Get results from list keys operation.
-            [riak_pipe:queue_work(Pipe, {Bucket, Key})
-             || Key <- Keys],
+            Bkeys = [ {Bucket, Key} || Key <- Keys ],
+            {ok, []} = riak_pipe:queue_work_list(Pipe, Bkeys),
             send_key_list(Pipe, Bucket, ReqId);
 
         {ReqId, {results, Results}} ->
             %% Get results from 2i operation. Handle both [Keys] and [{Key,
             %% Props}] formats. If props exists, use it as keydata.
-            F = fun
-                    ({Key, Props}) ->
-                        riak_pipe:queue_work(Pipe, {{Bucket, Key}, Props});
-                    (Key) ->
-                        riak_pipe:queue_work(Pipe, {Bucket, Key})
-                end,
-            [F(X) || X <- Results],
+            Bkeys = lists:map(fun({Key, Props}) -> {{Bucket, Key}, Props};
+                                 (Key)          -> {Bucket, Key}
+                              end,
+                              Results),
+            {ok, []} = riak_pipe:queue_work_list(Pipe, Bkeys),
             send_key_list(Pipe, Bucket, ReqId);
 
         {ReqId, {error, Reason}} ->
