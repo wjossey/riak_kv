@@ -13,7 +13,6 @@
                 remote,
                 index_n,
                 remote_tree,
-                lock,
                 built,
                 missing,
                 from}).
@@ -57,23 +56,21 @@ prepare_exchange(start_exchange, From, State) ->
 prepare_exchange({start_exchange, From}, State) ->
     prepare_exchange(start_exchange, State#state{from=From});
 
-prepare_exchange(start_exchange, State=#state{local=LocalVN,
+prepare_exchange(start_exchange, State=#state{local=_LocalVN,
                                               remote=RemoteVN,
                                               index_n=IndexN}) ->
-    {Index, _} = LocalVN,
-    case index_hashtree:get_exchange_lock(Index) of
-        {error, max_concurrency} ->
+    case entropy_manager:get_lock(exchange) of
+        max_concurrency ->
             %% lager:info("Exchange: max_concurrency"),
             maybe_reply(max_concurrency, State),
             {stop, normal, State};
-        {ok, Lock} ->
+        ok ->
             Sender = {fsm, undefined, self()},
             riak_core_vnode_master:command(RemoteVN,
                                            {start_exchange_remote, self(), IndexN},
                                            Sender,
                                            riak_kv_vnode_master),
-            State2 = State#state{lock=Lock},
-            next_state_with_timeout(prepare_exchange, State2)
+            next_state_with_timeout(prepare_exchange, State)
     end;
 prepare_exchange(timeout, State) ->
     do_timeout(State);
