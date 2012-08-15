@@ -76,7 +76,7 @@ do_register_tree(Index, Pid, State=#state{trees=Trees}) ->
     State#state{trees=Trees2}.
 
 do_get_lock(_Type, Pid, State=#state{locks=Locks}) ->
-    Concurrency = 8,
+    Concurrency = 2,
     case length(Locks) >= Concurrency of
         true ->
             {max_concurrency, State};
@@ -106,6 +106,7 @@ schedule_tick() ->
     %%                           claimant_tick,
     %%                           10000),
     Tick = 1000,
+    %% Tick = 10,
     erlang:send_after(Tick, ?MODULE, tick).
 
 tick(State) ->

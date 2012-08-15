@@ -65,12 +65,18 @@ prepare_exchange(start_exchange, State=#state{local=_LocalVN,
             maybe_reply(max_concurrency, State),
             {stop, normal, State};
         ok ->
-            Sender = {fsm, undefined, self()},
-            riak_core_vnode_master:command(RemoteVN,
-                                           {start_exchange_remote, self(), IndexN},
-                                           Sender,
-                                           riak_kv_vnode_master),
-            next_state_with_timeout(prepare_exchange, State)
+            case index_hashtree:get_lock(State#state.from, local_fsm) of
+                ok ->
+                    Sender = {fsm, undefined, self()},
+                    riak_core_vnode_master:command(RemoteVN,
+                                                   {start_exchange_remote, self(), IndexN},
+                                                   Sender,
+                                                   riak_kv_vnode_master),
+                    next_state_with_timeout(prepare_exchange, State);
+                _ ->
+                    maybe_reply(already_locked, State),
+                    {stop, normal, State}
+            end
     end;
 prepare_exchange(timeout, State) ->
     do_timeout(State);
