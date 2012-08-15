@@ -4,7 +4,7 @@
 -include_lib("riak_kv_vnode.hrl").
 
 %% API
--export([start_link/1, get_exchange_lock/1]).
+-export([start_link/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -13,11 +13,9 @@
 -record(state, {index,
                 built,
                 lock,
-                verified,
                 path,
                 exchange_queue,
-                exchanging :: undefined | {pid(), reference()}, %% Rename since it's not just exchanging (eg. reverify)
-                %% exchanging :: undefined | reference(), %% Rename since it's not just exchanging (eg. reverify)
+                exchanging :: undefined | {pid(), reference()},
                 trees}).
 
 -compile(export_all).
@@ -127,19 +125,6 @@ fold_keys(Partition, Tree) ->
                                     ok
                             end,
                     acc0=ok},
-    %% spawn_link(
-    %%   fun() ->
-    %%           riak_core_vnode_master:sync_command({Partition, node()},
-    %%                                               Req,
-    %%                                               riak_kv_vnode_master, infinity),
-    %%           ok
-    %%   end).
-    %%
-    %% Need to block for now to ensure building happens before updating/compare.
-    %% Easy to fix in the future to allow async building.
-    %% Block here is bad because this fold sends casts to this very process.
-    %% We're filling up our message queue and then handling everything after
-    %% the entire fold. Very bad.
     riak_core_vnode_master:sync_command({Partition, node()},
                                         Req,
                                         riak_kv_vnode_master, infinity),
@@ -154,12 +139,12 @@ handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
         {false, _} ->
             {reply, not_built, State};
         {true, undefined} ->
-            case get_exchange_lock(State#state.index) of
-                {error, max_concurrency} ->
+            case entropy_manager:get_lock(exchange_remote, FsmPid) of
+                max_concurrency ->
                     {reply, max_concurrency, State};
-                {ok, Lock} ->
+                ok ->
                     Ref = monitor(process, FsmPid),
-                    State2 = State#state{exchanging={FsmPid,Ref}, lock=Lock},
+                    State2 = State#state{exchanging={FsmPid,Ref}},
                     {reply, ok, State2}
             end;
         _ ->
@@ -251,26 +236,21 @@ handle_info(tick, State) ->
     State2 = do_tick(State),
     {noreply, State2};
 
-handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging={_Pid,_Ref},
-                                                  index=Index,
-                                                  lock=Lock}) ->
-    (Lock == undefined) orelse release_lock(Index, Lock),
-    State2 = State#state{exchanging=undefined,
-                         lock=undefined},
+handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging={_Pid,_Ref}}) ->
+    State2 = State#state{exchanging=undefined},
     {noreply, State2};
+%% handle_info({'DOWN', _Ref, _, _, _}, State=#state{exchanging={_Pid,_Ref},
+%%                                                   index=Index,
+%%                                                   lock=Lock}) ->
+%%     (Lock == undefined) orelse release_lock(Index, Lock),
+%%     State2 = State#state{exchanging=undefined,
+%%                          lock=undefined},
+%%     {noreply, State2};
 handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _) ->
     ok.
-%% terminate(_Reason, #state{trees=Trees}) ->
-%%     case Trees of
-%%         [] ->
-%%             ok;
-%%         [Tree|_] ->
-%%             hashtree:destroy(Tree),
-%%             ok
-%%     end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -301,9 +281,8 @@ apply_tree(Id, Fun, State=#state{trees=Trees}) ->
             {reply, Result, State2}
     end.
 
-do_build_finished(State=#state{index=Index, built={Lock,_Pid}}) ->
+do_build_finished(State=#state{index=Index, built=_Pid}) ->
     lager:info("Finished build (b): ~p", [Index]),
-    release_lock(Index, Lock),
     {_,Tree0} = hd(State#state.trees),
     hashtree:write_meta(<<"built">>, <<1>>, Tree0),
     State#state{built=true}.
@@ -405,36 +384,15 @@ start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
         {error, Reason} ->
             {Reason, State}
     end.
-    %% case exchange_fsm:start(LocalVN, RemoteVN, IndexN) of
-    %%     {ok, FsmPid} ->
-    %%         case exchange_fsm:sync_start_exchange(FsmPid) of
-    %%             ok ->
-    %%                 lager:info("Starting exchange: ~p", [LocalVN]),
-    %%                 Ref = monitor(process, FsmPid),
-    %%                 State2 = State#state{exchanging=Ref},
-    %%                 {ok, State2};
-    %%             Reason ->
-    %%                 {Reason, State}
-    %%         end;
-    %%     {error, Reason} ->
-    %%         {Reason, State}
-    %% end.
 
 schedule_tick() ->
     Tick = ?TICK_TIME,
     timer:apply_after(Tick, gen_server, cast, [self(), tick]).
 
 do_tick(State) ->
-    State1 = maybe_clear(State),
-    State2 = maybe_build(State1),
+    %% State1 = maybe_clear(State),
+    State2 = maybe_build(State),
     State3 = maybe_exchange(State2),
-    %% _X = Index,
-    %% case State#state.index of
-    %%     0 ->
-    %%         State3 = maybe_reverify(State2);
-    %%     _ ->
-    %%         State3 = State2
-    %% end,
     State3.
 
 maybe_clear(State=#state{exchanging=undefined, built=true, trees=Trees}) ->
@@ -449,66 +407,23 @@ maybe_clear(State=#state{exchanging=undefined, built=true, trees=Trees}) ->
 maybe_clear(State) ->
     State.
 
-maybe_reverify(State) when State#state.exchanging /= undefined ->
-    State;
-maybe_reverify(State=#state{index=Index}) ->
-    Pid = spawn(fun() ->
-    case get_build_lock(Index) of
-        {error, max_concurrency} ->
-            ok;
-        {ok, Lock} ->
-            lager:info("Reverifying: ~p", [Index]),
-
-    %% Tree = orddict:fetch(Id, Trees),
-    %% Tree2 = hashtree:insert(Key, Hash, Tree),
-    %% Trees2 = orddict:store(Id, Tree2, Trees),
-    %% State#state{trees=Trees2}.
-
-            _Trees2 = orddict:map(fun({_,Tree}) ->
-                                          hashtree:reverify(Index, Tree)
-                                  end, State#state.trees),
-            %% No way to update index_ht with these new Trees2
-            %% Probably need to change things to not modify trees in reverify, but have
-            %% reverify call do_insert, do_delete on index_ht instead
-            lager:info("Finished reverifying: ~p", [Index]),
-            release_lock(Index, Lock)
-    end
-    end),
-    Ref = monitor(process, Pid),
-    State#state{exchanging={Pid,Ref}}.
-
-maybe_build(State=#state{built=true}) ->
-    State;
-%% maybe_build(State=#state{index=Index, built={Lock,Pid}}) ->
-maybe_build(State=#state{built={_Lock,_Pid}}) ->
-    %% case is_process_alive(Pid) of
-    %%     false ->
-    %%         release_lock(Index, Lock),
-    %%         State#state{built=false};
-    %%     true ->
-    %%         State
-    %% end;
-    State;
-maybe_build(State=#state{index=Index}) ->
-    case get_build_lock(Index) of
-        {error, max_concurrency} ->
-            State;
-        {ok, Lock} ->
-            lager:info("Starting build: ~p", [Index]),
-            fold_keys(Index, self()),
-            lager:info("Finished build: ~p", [Index]),
-            {_,Tree0} = hd(State#state.trees),
-            hashtree:write_meta(<<"built">>, <<1>>, Tree0),
-            release_lock(Index, Lock),
-            State#state{built=true}
-            %% Self = self(),
-            %% Pid = spawn_link(fun() ->
-            %%                          fold_keys(Index, Self),
-            %%                          lager:info("Finished build (a): ~p", [Index]),
-            %%                          gen_server:cast(Self, build_finished)
-            %%                  end),
-            %% State#state{built={Lock,Pid}}
-    end.
+maybe_build(State=#state{built=false, index=Index}) ->
+    Self = self(),
+    Pid = spawn_link(fun() ->
+                             case entropy_manager:get_lock(build) of
+                                 max_concurrency ->
+                                     gen_server:cast(Self, build_failed);
+                                 ok ->
+                                     lager:info("Starting build: ~p", [Index]),
+                                     fold_keys(Index, Self),
+                                     lager:info("Finished build (a): ~p", [Index]),
+                                     gen_server:cast(Self, build_finished)
+                             end
+                     end),
+    State#state{built=Pid};
+maybe_build(State) ->
+    %% Already built or build in progress
+    State.
 
 maybe_exchange(State=#state{index=Index}) ->
     %% TODO: Shouldn't always increment next-exchange on all failure cases
@@ -523,39 +438,6 @@ maybe_exchange(State=#state{index=Index}) ->
             %% lager:info("ExchangeQ: ~p", [Reason]),
             State3
     end.
-    %% {ok, State3} = start_exchange(LocalVN, NextExchange, Ring, State2),
-    %% State3.
-    %% case start_exchange(LocalVN, NextExchange, Ring, State2) of
-    %%     {ok, State3} ->
-    %%         State3;
-    %%     {max_concurrency, State3} ->
-    %%         %% lager:info("Requeuing rate limited exchange"),
-    %%         State4 = requeue_exchange(NextExchange, State3),
-    %%         State4;
-    %%     {{remote, max_concurrency}, State3} ->
-    %%         %% lager:info("Requeuing rate limited exchange"),
-    %%         State4 = requeue_exchange(NextExchange, State3),
-    %%         State4;
-    %%     {{remote, already_exchanging}, State3} ->
-    %%         %% lager:info("Requeuing rate limited exchange"),
-    %%         State4 = requeue_exchange(NextExchange, State3),
-    %%         State4;
-    %%     {Reason, State3} ->
-    %%         lager:info("ExchangeQ: ~p", [Reason]),
-    %%         State3
-    %% end.
-%% maybe_exchange(State=#state{index=Index}) ->
-%%     case get_exchange_lock(Index) of
-%%         {error, max_concurrency} ->
-%%             State;
-%%         {ok, Lock} ->
-%%             {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-%%             {NextExchange, State2} = next_exchange(Ring, State),
-%%             LocalVN = {Index, node()},
-%%             do_exchange(LocalVN, NextExchange, Ring),
-%%             release_lock(Index, Lock),
-%%             State2
-%%     end.
 
 next_exchange(Ring, State=#state{exchange_queue=[]}) ->
     [Exchange|Rest] = all_pairwise_exchanges(State#state.index, Ring),
@@ -569,26 +451,3 @@ next_exchange(_Ring, State=#state{exchange_queue=Exchanges}) ->
 requeue_exchange(Exchange, State) ->
     Exchanges = State#state.exchange_queue ++ [Exchange],
     State#state{exchange_queue=Exchanges}.
-
-%% Use global locks for concurrency limits.
-%% TODO: Consider moving towards "exchange/index" manager approach
-get_build_lock(Index) ->
-    Concurrency = 16,
-    get_lock(Index, build_token, Concurrency).
-
-get_exchange_lock(Index) ->
-    Concurrency = 8,
-    get_lock(Index, concurrency_token, Concurrency).
-
-get_lock(_LockId, _TokenId, 0) ->
-    {error, max_concurrency};
-get_lock(LockId, TokenId, Count) ->
-    case global:set_lock({{TokenId, Count}, {node(), LockId}}, [node()], 0) of
-        true ->
-            {ok, {TokenId, Count}};
-        false ->
-            get_lock(LockId, TokenId, Count-1)
-    end.
-
-release_lock(LockId, Token) ->
-    global:del_lock({Token, {node(), LockId}}, [node()]).

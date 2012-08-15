@@ -10,7 +10,8 @@
          terminate/2, code_change/3]).
 
 -record(state, {trees,
-                tree_queue}).
+                tree_queue,
+                locks}).
 
 %%%===================================================================
 %%% API
@@ -22,6 +23,12 @@ start_link() ->
 register_tree(Index, Pid) ->
     gen_server:call(?MODULE, {register_tree, Index, Pid}).
 
+get_lock(Type) ->
+    get_lock(Type, self()).
+
+get_lock(Type, Pid) ->
+    gen_server:call(?MODULE, {get_lock, Type, Pid}).
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -29,12 +36,17 @@ register_tree(Index, Pid) ->
 init([]) ->
     schedule_tick(),
     {ok, #state{trees=[],
-                tree_queue=[]}}.
+                tree_queue=[],
+                locks=[]}}.
 
 handle_call({register_tree, Index, Pid}, _From, State) ->
     State2 = do_register_tree(Index, Pid, State),
     {reply, ok, State2};
-handle_call(_Request, _From, State) ->
+handle_call({get_lock, Type, Pid}, _From, State) ->
+    {Reply, State2} = do_get_lock(Type, Pid, State),
+    {reply, Reply, State2};
+handle_call(Request, From, State) ->
+    lager:warning("Unexpected message: ~p from ~p", [Request, From]),
     {reply, ok, State}.
 
 handle_cast(_Msg, State) ->
@@ -43,7 +55,9 @@ handle_cast(_Msg, State) ->
 handle_info(tick, State) ->
     State2 = tick(State),
     {noreply, State2};
-
+handle_info({'DOWN', Ref, _, _, _}, State) ->
+    State2 = maybe_release_lock(Ref, State),
+    {noreply, State2};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -60,6 +74,21 @@ code_change(_OldVsn, State, _Extra) ->
 do_register_tree(Index, Pid, State=#state{trees=Trees}) ->
     Trees2 = orddict:store(Index, Pid, Trees),
     State#state{trees=Trees2}.
+
+do_get_lock(_Type, Pid, State=#state{locks=Locks}) ->
+    Concurrency = 8,
+    case length(Locks) >= Concurrency of
+        true ->
+            {max_concurrency, State};
+        false ->
+            Ref = monitor(process, Pid),
+            State2 = State#state{locks=[Ref|Locks]},
+            {ok, State2}
+    end.
+
+maybe_release_lock(Ref, State) ->
+    Locks = lists:delete(Ref, State#state.locks),
+    State#state{locks=Locks}.
 
 next_tree(#state{trees=[]}) ->
     throw(no_trees_registered);
