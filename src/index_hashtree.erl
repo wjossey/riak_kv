@@ -14,7 +14,6 @@
                 built,
                 lock :: undefined | reference(),
                 path,
-                exchange_queue,
                 trees}).
 
 -compile(export_all).
@@ -81,8 +80,7 @@ init([Index]) ->
     {ok, #state{index=Index,
                 trees=orddict:new(),
                 built=false,
-                path=Path,
-                exchange_queue=[]}};
+                path=Path}};
 
 init([Index, IndexN]) ->
     %% schedule_tick(),
@@ -93,8 +91,7 @@ init([Index, IndexN]) ->
     State = #state{index=Index,
                    trees=orddict:new(),
                    built=false,
-                   path=Path,
-                   exchange_queue=[]},
+                   path=Path},
     State2 = init_trees(IndexN, State),
     {ok, State2}.
 
@@ -191,28 +188,6 @@ handle_call({compare, Id, Remote}, From, State) ->
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
-
-%% handle_cast({exchange_status, Pid, RemoteVN, Reply},
-%%             State=#state{exchanging={FsmPid,_}}) when Pid == FsmPid ->
-handle_cast({exchange_status, _Pid, RemoteVN, Reply}, State) ->
-    %% lager:info("S: ~p", [Reply]),
-    case Reply of
-        max_concurrency ->
-            %% lager:info("Requeuing rate limited exchange"),
-            State2 = requeue_exchange(RemoteVN, State);
-        {remote, max_concurrency} ->
-            %% lager:info("Requeuing rate limited exchange"),
-            State2 = requeue_exchange(RemoteVN, State);
-        {remote, already_exchanging} ->
-            %% lager:info("Requeuing rate limited exchange"),
-            State2 = requeue_exchange(RemoteVN, State);
-        ok ->
-            State2 = State;
-        _ ->
-            lager:info("Exchange status: ~p", [Reply]),
-            State2 = State
-    end,
-    {noreply, State2};
 
 handle_cast(tick, State) ->
     State2 = do_tick(State),
@@ -354,59 +329,6 @@ get_index_n({Bucket, Key}, Ring) ->
     Index = riak_core_ring:responsible_index(ChashKey, Ring),
     {Index, N}.
 
-do_all_exchange(Index) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    AllExchanges = all_pairwise_exchanges(Index, Ring),
-    LocalVN = {Index, node()},
-    lists:map(
-      fun(NextExchange) ->
-              do_exchange(LocalVN, NextExchange, Ring),
-              lager:info("===")
-      end, AllExchanges),
-    ok.
-
-do_exchange(LocalVN, {RemoteIdx, IndexN}, Ring) ->
-    Owner = riak_core_ring:index_owner(Ring, RemoteIdx),
-    RemoteVN = {RemoteIdx, Owner},
-    {ok, Fsm} = exchange_fsm:start_link(LocalVN, RemoteVN, IndexN),
-    exchange_fsm:sync_start_exchange(Fsm),
-    ok.
-
-all_pairwise_exchanges(Index) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    all_pairwise_exchanges(Index, Ring).
-
-all_pairwise_exchanges(Index, Ring) ->
-    LocalIndexN = riak_kv_vnode:responsible_preflists(Index, Ring),
-    Sibs = riak_kv_vnode:preflist_siblings(Index),
-    lists:flatmap(
-      fun(RemoteIdx) when RemoteIdx == Index ->
-              [];
-         (RemoteIdx) ->
-              RemoteIndexN = riak_kv_vnode:responsible_preflists(Index, Ring),
-              SharedIndexN = ordsets:intersection(ordsets:from_list(LocalIndexN),
-                                                  ordsets:from_list(RemoteIndexN)),
-              [{RemoteIdx, IndexN} || IndexN <- SharedIndexN]
-      end, Sibs).
-
-start_exchange(_, _, _, State) when State#state.built /= true ->
-    {not_built, State};
-start_exchange(_, _, _, State) when State#state.lock /= undefined ->
-    {already_exchanging, State};
-start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
-    %% lager:info("Starting exchange: ~p", [LocalVN]),
-    Owner = riak_core_ring:index_owner(Ring, RemoteIdx),
-    RemoteVN = {RemoteIdx, Owner},
-    case exchange_fsm:start(LocalVN, RemoteVN, IndexN) of
-        {ok, FsmPid} ->
-            %% Make this happen automatically as part of init in exchange_fsm
-            %% lager:info("Starting exchange: ~p", [LocalVN]),
-            exchange_fsm:start_exchange(FsmPid, self()),
-            {ok, State};
-        {error, Reason} ->
-            {Reason, State}
-    end.
-
 schedule_tick() ->
     Tick = ?TICK_TIME,
     timer:apply_after(Tick, gen_server, cast, [self(), tick]).
@@ -414,8 +336,7 @@ schedule_tick() ->
 do_tick(State) ->
     %% State1 = maybe_clear(State),
     State2 = maybe_build(State),
-    State3 = maybe_exchange(State2),
-    State3.
+    State2.
 
 maybe_clear(State=#state{lock=undefined, built=true, trees=Trees}) ->
     lager:info("Clearing tree ~p", [State#state.index]),
@@ -446,30 +367,3 @@ maybe_build(State=#state{built=false, index=Index}) ->
 maybe_build(State) ->
     %% Already built or build in progress
     State.
-
-maybe_exchange(State=#state{index=Index}) ->
-    %% TODO: Shouldn't always increment next-exchange on all failure cases
-    %%       ie. max_concurrency
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    {NextExchange, State2} = next_exchange(Ring, State),
-    LocalVN = {Index, node()},
-    case start_exchange(LocalVN, NextExchange, Ring, State2) of
-        {ok, State3} ->
-            State3;
-        {_Reason, State3} ->
-            %% lager:info("ExchangeQ: ~p", [Reason]),
-            State3
-    end.
-
-next_exchange(Ring, State=#state{exchange_queue=[]}) ->
-    [Exchange|Rest] = all_pairwise_exchanges(State#state.index, Ring),
-    State2 = State#state{exchange_queue=Rest},
-    {Exchange, State2};
-next_exchange(_Ring, State=#state{exchange_queue=Exchanges}) ->
-    [Exchange|Rest] = Exchanges,
-    State2 = State#state{exchange_queue=Rest},
-    {Exchange, State2}.
-
-requeue_exchange(Exchange, State) ->
-    Exchanges = State#state.exchange_queue ++ [Exchange],
-    State#state{exchange_queue=Exchanges}.

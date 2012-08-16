@@ -9,9 +9,16 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-type index() :: non_neg_integer().
+-type index_n() :: {index(), pos_integer()}.
+
 -record(state, {trees,
                 tree_queue,
-                locks}).
+                locks,
+                exchange_queue :: [{index(), index(), index_n()}],
+                exchanges}).
+
+-define(CONCURRENCY, 2).
 
 %%%===================================================================
 %%% API
@@ -37,7 +44,9 @@ init([]) ->
     schedule_tick(),
     {ok, #state{trees=[],
                 tree_queue=[],
-                locks=[]}}.
+                locks=[],
+                exchanges=[],
+                exchange_queue=[]}}.
 
 handle_call({register_tree, Index, Pid}, _From, State) ->
     State2 = do_register_tree(Index, Pid, State),
@@ -49,6 +58,11 @@ handle_call(Request, From, State) ->
     lager:warning("Unexpected message: ~p from ~p", [Request, From]),
     {reply, ok, State}.
 
+%% handle_cast({exchange_status, Pid, RemoteVN, Reply},
+%%             State=#state{exchanging={FsmPid,_}}) when Pid == FsmPid ->
+handle_cast({exchange_status, Pid, LocalVN, RemoteVN, IndexN, Reply}, State) ->
+    State2 = do_exchange_status(Pid, LocalVN, RemoteVN, IndexN, Reply, State),
+    {noreply, State2};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -57,7 +71,8 @@ handle_info(tick, State) ->
     {noreply, State2};
 handle_info({'DOWN', Ref, _, _, _}, State) ->
     State2 = maybe_release_lock(Ref, State),
-    {noreply, State2};
+    State3 = maybe_clear_exchange(Ref, State2),
+    {noreply, State3};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -73,11 +88,12 @@ code_change(_OldVsn, State, _Extra) ->
 
 do_register_tree(Index, Pid, State=#state{trees=Trees}) ->
     Trees2 = orddict:store(Index, Pid, Trees),
-    State#state{trees=Trees2}.
+    State2 = State#state{trees=Trees2},
+    State3 = add_index_exchanges(Index, State2),
+    State3.
 
 do_get_lock(_Type, Pid, State=#state{locks=Locks}) ->
-    Concurrency = 2,
-    case length(Locks) >= Concurrency of
+    case length(Locks) >= ?CONCURRENCY of
         true ->
             {max_concurrency, State};
         false ->
@@ -89,6 +105,16 @@ do_get_lock(_Type, Pid, State=#state{locks=Locks}) ->
 maybe_release_lock(Ref, State) ->
     Locks = lists:delete(Ref, State#state.locks),
     State#state{locks=Locks}.
+
+maybe_clear_exchange(Ref, State) ->
+    case lists:keyfind(Ref, 2, State#state.exchanges) of
+        false ->
+            ok;
+        {Idx,Ref} ->
+            lager:info("Untracking exchange: ~p", [Idx])
+    end,
+    Exchanges = lists:keydelete(Ref, 2, State#state.exchanges),
+    State#state{exchanges=Exchanges}.
 
 next_tree(#state{trees=[]}) ->
     throw(no_trees_registered);
@@ -113,8 +139,9 @@ tick(State) ->
     State2 = lists:foldl(fun(_,S) ->
                                  maybe_poke_tree(S)
                          end, State, lists:seq(1,10)),
+    State3 = maybe_exchange(State2),
     schedule_tick(),
-    State2.
+    State3.
 
 maybe_poke_tree(State=#state{trees=[]}) ->
     State;
@@ -123,3 +150,142 @@ maybe_poke_tree(State) ->
     Tree ! tick,
     State2.
 
+%%%===================================================================
+%%% Exchanging
+%%%===================================================================
+
+do_exchange_status(_Pid, LocalVN, RemoteVN, IndexN, Reply, State) ->
+    {LocalIdx, _} = LocalVN,
+    {RemoteIdx, _} = RemoteVN,
+    lager:info("S: ~p", [Reply]),
+    case Reply of
+        ok ->
+            State;
+        _ ->
+            %% lager:info("Requeuing rate limited exchange"),
+            State2 = requeue_exchange(LocalIdx, RemoteIdx, IndexN, State),
+            State2
+    end.
+
+start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State) ->
+    Owner = riak_core_ring:index_owner(Ring, RemoteIdx),
+    RemoteVN = {RemoteIdx, Owner},
+    case exchange_fsm:start(LocalVN, RemoteVN, IndexN) of
+        {ok, FsmPid} ->
+            %% Make this happen automatically as part of init in exchange_fsm
+            lager:info("Starting exchange: ~p", [LocalVN]),
+            %% exchange_fsm handles locking: tries to get concurrency lock, then index_ht lock
+            {LocalIdx, _} = LocalVN,
+            Tree = orddict:fetch(LocalIdx, State#state.trees),
+            exchange_fsm:start_exchange(FsmPid, Tree, self()),
+            %% Do we want to monitor exchange FSMs?
+            %% Do we want to track exchange FSMs?
+            Ref = monitor(process, FsmPid),
+            E = State#state.exchanges,
+            {ok, State#state{exchanges=[{LocalIdx,Ref}|E]}};
+        {error, Reason} ->
+            {Reason, State}
+    end.
+
+all_pairwise_exchanges(Index, Ring) ->
+    LocalIndexN = riak_kv_vnode:responsible_preflists(Index, Ring),
+    Sibs = riak_kv_vnode:preflist_siblings(Index),
+    lists:flatmap(
+      fun(RemoteIdx) when RemoteIdx == Index ->
+              [];
+         (RemoteIdx) ->
+              RemoteIndexN = riak_kv_vnode:responsible_preflists(RemoteIdx, Ring),
+              SharedIndexN = ordsets:intersection(ordsets:from_list(LocalIndexN),
+                                                  ordsets:from_list(RemoteIndexN)),
+              [{Index, RemoteIdx, IndexN} || IndexN <- SharedIndexN]
+      end, Sibs).
+
+all_exchanges(_Node, Ring, #state{trees=Trees}) ->
+    Indices = orddict:fetch_keys(Trees),
+    lists:flatmap(fun(Index) ->
+                          all_pairwise_exchanges(Index, Ring)
+                  end, Indices).
+
+add_index_exchanges(Index, State) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Exchanges = all_pairwise_exchanges(Index, Ring),
+    EQ = State#state.exchange_queue ++ Exchanges,
+    EQ2 = prune_exchanges(EQ),
+    State#state{exchange_queue=EQ2}.
+
+prune_exchanges(Exchanges) ->
+    L = [if A < B ->
+                 {A, B, IndexN};
+            true ->
+                 {B, A, IndexN}
+         end || {A, B, IndexN} <- Exchanges],
+    lists:usort(L).
+
+already_exchanging(Index, #state{exchanges=E}) ->
+    case lists:keyfind(Index, 1, E) of
+        false ->
+            false;
+        {Index,_} ->
+            true
+    end.
+
+maybe_exchange(State) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    case next_exchange(Ring, State) of
+        {none, State2} ->
+            State2;
+        {NextExchange, State2} ->
+            {LocalIdx, RemoteIdx, IndexN} = NextExchange,
+            case already_exchanging(LocalIdx, State) of
+                true ->
+                    requeue_exchange(LocalIdx, RemoteIdx, IndexN, State2);
+                false ->
+                    LocalVN = {LocalIdx, node()},
+                    io:format("SE: ~p~n", [[LocalVN, {RemoteIdx, IndexN}]]),
+                    case start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State2) of
+                        {ok, State3} ->
+                            State3;
+                        {_Reason, State3} ->
+                            %% lager:info("ExchangeQ: ~p", [Reason]),
+                            State3
+                    end
+            end
+    end.
+    %% {NextExchange, State2} = next_exchange(Ring, State),
+    %% {LocalIdx, RemoteIdx, IndexN} = NextExchange,
+    %% LocalVN = {LocalIdx, node()},
+    %% io:format("SE: ~p~n", [[LocalVN, {RemoteIdx, IndexN}]]),
+    %% case start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State2) of
+    %%     {ok, State3} ->
+    %%         State3;
+    %%     {_Reason, State3} ->
+    %%         %% lager:info("ExchangeQ: ~p", [Reason]),
+    %%         State3
+    %% end.
+
+init_next_exchange(State) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Exchanges = prune_exchanges(all_exchanges(node(), Ring, State)),
+    State#state{exchange_queue=Exchanges}.
+
+next_exchange(_Ring, State=#state{exchange_queue=[]}) ->
+    %% %% [Exchange|Rest] = all_pairwise_exchanges(State#state.index, Ring),
+    %% [Exchange|Rest] = prune_exchanges(all_exchanges(node(), Ring, State)),
+    %% State2 = State#state{exchange_queue=Rest},
+    %% {Exchange, State2};
+    {none, State};
+next_exchange(_Ring, State=#state{exchange_queue=Exchanges}) ->
+    [Exchange|Rest] = Exchanges,
+    State2 = State#state{exchange_queue=Rest},
+    {Exchange, State2}.
+
+requeue_exchange(LocalIdx, RemoteIdx, IndexN, State) ->
+    Exchange = {LocalIdx, RemoteIdx, IndexN},
+    case lists:member(Exchange, State#state.exchange_queue) of
+        true ->
+            State;
+        false ->
+            lager:info("Requeue: ~p", [{LocalIdx, RemoteIdx, IndexN}]),
+            Exchanges = State#state.exchange_queue ++ [Exchange],
+            State#state{exchange_queue=Exchanges}
+    end.

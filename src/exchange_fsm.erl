@@ -12,6 +12,7 @@
 -record(state, {local,
                 remote,
                 index_n,
+                local_tree,
                 remote_tree,
                 built,
                 missing,
@@ -34,10 +35,10 @@ sync_start_exchange(Fsm) ->
     gen_fsm:sync_send_event(Fsm, start_exchange, infinity).
 
 start_exchange(Fsm) ->
-    start_exchange(Fsm, undefined).
+    start_exchange(Fsm, undefined, undefined).
 
-start_exchange(Fsm, Pid) ->
-    gen_fsm:send_event(Fsm, {start_exchange, Pid}).
+start_exchange(Fsm, Tree, Pid) ->
+    gen_fsm:send_event(Fsm, {start_exchange, Tree, Pid}).
 
 %%%===================================================================
 %%% gen_fsm callbacks
@@ -53,8 +54,8 @@ init([LocalVN, RemoteVN, IndexN]) ->
 prepare_exchange(start_exchange, From, State) ->
     prepare_exchange(start_exchange, State#state{from=From}).
 
-prepare_exchange({start_exchange, From}, State) ->
-    prepare_exchange(start_exchange, State#state{from=From});
+prepare_exchange({start_exchange, Tree, From}, State) ->
+    prepare_exchange(start_exchange, State#state{local_tree=Tree, from=From});
 
 prepare_exchange(start_exchange, State=#state{local=_LocalVN,
                                               remote=RemoteVN,
@@ -65,7 +66,7 @@ prepare_exchange(start_exchange, State=#state{local=_LocalVN,
             maybe_reply(max_concurrency, State),
             {stop, normal, State};
         ok ->
-            case index_hashtree:get_lock(State#state.from, local_fsm) of
+            case index_hashtree:get_lock(State#state.local_tree, local_fsm) of
                 ok ->
                     Sender = {fsm, undefined, self()},
                     riak_core_vnode_master:command(RemoteVN,
@@ -218,8 +219,11 @@ do_timeout(State=#state{local=LocalVN,
 maybe_reply(_, State=#state{from=undefined}) ->
     ok,
     State;
-maybe_reply(Reply, State=#state{from=Pid, remote=RemoteVN}) when is_pid(Pid) ->
-    gen_server:cast(Pid, {exchange_status, self(), RemoteVN, Reply}),
+maybe_reply(Reply, State=#state{from=Pid,
+                                local=LocalVN,
+                                remote=RemoteVN,
+                                index_n=IndexN}) when is_pid(Pid) ->
+    gen_server:cast(Pid, {exchange_status, self(), LocalVN, RemoteVN, IndexN, Reply}),
     State#state{from=undefined};
 maybe_reply(Reply, State=#state{from=From}) ->
     gen_fsm:reply(From, Reply),
