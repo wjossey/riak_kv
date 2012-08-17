@@ -153,11 +153,16 @@ handle_call({start_exchange_remote, FsmPid, _IndexN}, _From, State) ->
             end
     end;
 
-handle_call({update_tree, Id}, _From, State) ->
+handle_call({update_tree, Id}, From, State) ->
     lager:info("Updating tree: (vnode)=~p (preflist)=~p", [State#state.index, Id]),
     apply_tree(Id,
                fun(Tree) ->
-                       {ok, hashtree:update_tree(Tree)}
+                       {SnapTree, Tree2} = hashtree:update_snapshot(Tree),
+                       spawn_link(fun() ->
+                                          hashtree:update_perform(SnapTree),
+                                          gen_server:reply(From, ok)
+                                  end),
+                       {noreply, Tree2}
                end,
                State);
 
@@ -277,7 +282,12 @@ apply_tree(Id, Fun, State=#state{trees=Trees}) ->
             {Result, Tree2} = Fun(Tree),
             Trees2 = orddict:store(Id, Tree2, Trees),
             State2 = State#state{trees=Trees2},
-            {reply, Result, State2}
+            case Result of
+                noreply ->
+                    {noreply, State2};
+                _ ->
+                    {reply, Result, State2}
+            end
     end.
 
 do_build_finished(State=#state{index=Index, built=_Pid}) ->
