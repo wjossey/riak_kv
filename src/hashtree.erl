@@ -2,6 +2,8 @@
 -export([new/0,
          insert/3,
          update_tree/1,
+         update_snapshot/1,
+         update_perform/1,
          destroy/1,
          local_compare/2,
          compare/2,
@@ -17,7 +19,7 @@
 
 -define(NUM_SEGMENTS, (1024*1024)).
 -define(WIDTH, 1024).
--define(MEM_LEVELS, 4).
+-define(MEM_LEVELS, 0).
 
 -record(state, {id,
                 levels,
@@ -113,10 +115,18 @@ should_insert(HKey, Opts, State) ->
             true
     end.
 
-update_tree(State=#state{dirty_segments=Dirty}) ->
+update_snapshot(State) ->
+    SnapState = snapshot(State),
+    State2 = SnapState#state{dirty_segments=bitarray_new(?NUM_SEGMENTS)},
+    {SnapState, State2}.
+
+update_tree(State) ->
+    State2 = snapshot(State),
+    update_perform(State2).
+
+update_perform(State2=#state{dirty_segments=Dirty}) ->
     %% Segments = gb_sets:to_list(Dirty),
     Segments = bitarray_to_list(Dirty),
-    State2 = snapshot(State),
     State3 = update_tree(Segments, State2),
     %% State3#state{dirty_segments=gb_sets:new()}.
     State3#state{dirty_segments=bitarray_new(?NUM_SEGMENTS)}.
@@ -279,12 +289,20 @@ set_disk_bucket(Level, Bucket, Val, State=#state{id=Id, ref=Ref}) ->
 encode(TreeId, Segment, Key) ->
     <<$t,TreeId:22/binary,$s,Segment:64/integer,Key/binary>>.
 
+safe_decode(Bin) ->
+    case Bin of
+        <<$t,TreeId:22/binary,$s,Segment:64/integer,Key/binary>> ->
+            {TreeId, Segment, Key};
+        _ ->
+            {-1, -1, <<>>}
+    end.
+
 decode(Bin) ->
     <<$t,TreeId:22/binary,$s,Segment:64/integer,Key/binary>> = Bin,
     {TreeId, Segment, Key}.
 
 encode_bucket(TreeId, Level, Bucket) ->
-    <<$t,TreeId:22/binary,$b,Level:64/integer,Bucket:64/integer>>.
+    <<$b,TreeId:22/binary,$b,Level:64/integer,Bucket:64/integer>>.
 
 encode_meta(Key) ->
     <<$m,Key/binary>>.
@@ -312,7 +330,7 @@ multi_select_segment(#state{id=Id, itr=Itr}, Segments, F) ->
 iterate({error, invalid_iterator}, AllAcc) ->
     AllAcc;
 iterate({ok, K, V}, AllAcc={Itr, Id, Segment, Segments, F, Acc, FinalAcc}) ->
-    {SegId, Seg, _} = decode(K),
+    {SegId, Seg, _} = safe_decode(K),
     case {SegId, Seg, Segments} of
         {Id, Segment, _} ->
             %% Still reading existing segment
