@@ -59,7 +59,10 @@ exchange_segment(Id, Segment, Tree) ->
     gen_server:call(Tree, {exchange_segment, Id, Segment}, infinity).
 
 compare(Id, Remote, Tree) ->
-    gen_server:call(Tree, {compare, Id, Remote}, infinity).
+    compare(Id, Remote, undefined, Tree).
+
+compare(Id, Remote, AccFun, Tree) ->
+    gen_server:call(Tree, {compare, Id, Remote, AccFun}, infinity).
 
 get_lock(Tree, Type) ->
     get_lock(Tree, Type, self()).
@@ -182,10 +185,15 @@ handle_call({exchange_segment, Id, Segment}, _From, State) ->
                end,
                State);
 
-handle_call({compare, Id, Remote}, From, State) ->
+handle_call({compare, Id, Remote, AccFun}, From, State) ->
     Tree = orddict:fetch(Id, State#state.trees),
     spawn(fun() ->
-                  Result = hashtree:compare(Tree, Remote),
+                  Result = case AccFun of
+                               undefined ->
+                                   hashtree:compare(Tree, Remote);
+                               _ ->
+                                   hashtree:compare(Tree, Remote, AccFun)
+                           end,
                   gen_server:reply(From, Result)
           end),
     {noreply, State};

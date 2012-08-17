@@ -146,19 +146,23 @@ key_exchange(timeout, State=#state{local=LocalVN,
 
     %% TODO: Do we want this to be sync? Do we want FSM to be able to timeout?
     %%       Perhaps this should be sync but we have timeout tick?
-    KeyDiff = index_hashtree:compare(IndexN, Remote, LocalTree),
-
-    Missing = [binary_to_term(BKey) || {_, BKey} <- KeyDiff],
     {ok, RC} = riak:local_client(),
-    [begin
-         lager:info("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
-         RC:get(Bucket, Key)
-     end || {Bucket, Key} <- Missing],
-    maybe_reply(ok, State),
-    lager:info("Finished exchange between ~p and ~p", [LocalVN, RemoteVN]),
+    AccFun = fun(KeyDiff, Acc) ->
+                     lists:foreach(fun(Diff) ->
+                                           read_repair_keydiff(RC, Diff)
+                                   end, KeyDiff),
+                     Acc
+             end,
+    index_hashtree:compare(IndexN, Remote, AccFun, LocalTree),
     {stop, normal, State}.
 %%     [riak_kv_vnode:get([LocalVN, RemoteVN], BKey, make_ref()) || BKey <- Missing],
 %%     {next_state, test, State#state{missing=Missing}, 1000}.
+
+read_repair_keydiff(RC, {_, KeyBin}) ->
+    {Bucket, Key} = binary_to_term(KeyBin),
+    lager:info("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
+    RC:get(Bucket, Key),
+    ok.
 
 %% test(timeout, State=#state{missing=Missing}) ->
 %%     {ok, RC} = riak:local_client(),
