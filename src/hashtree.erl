@@ -7,6 +7,7 @@
          destroy/1,
          local_compare/2,
          compare/2,
+         compare/3,
          levels/1,
          segments/1,
          width/1,
@@ -153,7 +154,12 @@ local_compare(T1, T2) ->
     compare(T1, Remote).
 
 compare(Tree, Remote) ->
-    compare(1, 0, Tree, Remote, []).
+    compare(Tree, Remote, fun(Keys, KeyAcc) ->
+                                  Keys ++ KeyAcc
+                          end).
+
+compare(Tree, Remote, AccFun) ->
+    compare(1, 0, Tree, Remote, AccFun, []).
 
 levels(#state{levels=L}) ->
     L.
@@ -350,10 +356,10 @@ iterate({ok, K, V}, AllAcc={Itr, Id, Segment, Segments, F, Acc, FinalAcc}) ->
             AllAcc
     end.
 
-compare(Level, Bucket, Tree, Remote, KeyAcc) when Level == Tree#state.levels+1 ->
+compare(Level, Bucket, Tree, Remote, AccFun, KeyAcc) when Level == Tree#state.levels+1 ->
     Keys = compare_segments(Bucket, Tree, Remote),
-    Keys ++ KeyAcc;
-compare(Level, Bucket, Tree, Remote, KeyAcc) ->
+    AccFun(Keys, KeyAcc);
+compare(Level, Bucket, Tree, Remote, AccFun, KeyAcc) ->
     HL1 = get_bucket(Level, Bucket, Tree),
     HL2 = Remote(get_bucket, {Level, Bucket}),
     Union = lists:ukeysort(1, HL1 ++ HL2),
@@ -362,7 +368,7 @@ compare(Level, Bucket, Tree, Remote, KeyAcc) ->
     Diff = ordsets:subtract(Union, Inter),
     KeyAcc3 =
         lists:foldl(fun({Bucket2, _}, KeyAcc2) ->
-                            compare(Level+1, Bucket2, Tree, Remote, KeyAcc2)
+                            compare(Level+1, Bucket2, Tree, Remote, AccFun, KeyAcc2)
                     end, KeyAcc, Diff),
     KeyAcc3.
 
