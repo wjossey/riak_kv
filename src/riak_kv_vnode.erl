@@ -819,6 +819,7 @@ do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
     {Bucket, Key} = BKey,
     case Mod:delete(Bucket, Key, IndexSpecs, ModState) of
         {ok, UpdModState} ->
+            index_hashtree:delete(BKey, State#state.hashtrees),
             update_index_delete_stats(IndexSpecs),
             State#state{modstate = UpdModState};
         {error, _Reason, UpdModState} ->
@@ -918,7 +919,6 @@ perform_put({false, _Obj},
     {{dw, Idx, ReqId}, State};
 perform_put({true, Obj},
             #state{idx=Idx,
-                   hashtrees=Trees,
                    mod=Mod,
                    modstate=ModState}=State,
             #putargs{returnbody=RB,
@@ -928,7 +928,7 @@ perform_put({true, Obj},
     Val = term_to_binary(Obj),
     case Mod:put(Bucket, Key, IndexSpecs, Val, ModState) of
         {ok, UpdModState} ->
-            index_hashtree:insert_object({Bucket, Key}, Val, Trees),
+            update_hashtree(Bucket, Key, Val, State),
             case RB of
                 true ->
                     Reply = {dw, Idx, Obj, ReqID};
@@ -1219,8 +1219,8 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 %% @private
 %% upon receipt of a handoff datum, there is no client FSM
 do_diffobj_put({Bucket, Key}, DiffObj,
-               _StateData=#state{mod=Mod,
-                                 modstate=ModState}) ->
+               StateData=#state{mod=Mod,
+                                modstate=ModState}) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case Mod:get(Bucket, Key, ModState) of
@@ -1235,6 +1235,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
             Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
             case Res of
                 {ok, _UpdModState} ->
+                    update_hashtree(Bucket, Key, Val, StateData),
                     update_index_write_stats(IndexBackend, IndexSpecs),
                     riak_kv_stat:update(vnode_put);
                 _ -> nop
@@ -1260,6 +1261,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
                     case Res of
                         {ok, _UpdModState} ->
+                            update_hashtree(Bucket, Key, Val, StateData),
                             update_index_write_stats(IndexBackend, IndexSpecs),
                             riak_kv_stat:update(vnode_put);
                         _ ->
@@ -1268,6 +1270,9 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     Res
             end
     end.
+
+update_hashtree(Bucket, Key, Val, #state{hashtrees=Trees}) ->
+    index_hashtree:insert_object({Bucket, Key}, Val, Trees).
 
 %% @private
 
