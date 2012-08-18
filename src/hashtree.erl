@@ -1,6 +1,7 @@
 -module(hashtree).
 -export([new/0,
          insert/3,
+         delete/2,
          update_tree/1,
          update_snapshot/1,
          update_perform/1,
@@ -99,6 +100,15 @@ insert(Key, ObjHash, State, Opts) ->
         false ->
             State
     end.
+
+delete(Key, State) ->
+    Hash = erlang:phash2(Key),
+    Segment = Hash rem State#state.segments,
+    HKey = encode(State#state.id, Segment, Key),
+    ok = eleveldb:delete(State#state.ref, HKey, []),
+    %% Dirty = gb_sets:add_element(Segment, State#state.dirty_segments),
+    Dirty = bitarray_set(Segment, State#state.dirty_segments),
+    State#state{dirty_segments=Dirty}.
 
 should_insert(HKey, Opts, State) ->
     IfMissing = proplists:get_value(if_missing, Opts, false),
