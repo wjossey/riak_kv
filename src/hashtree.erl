@@ -51,17 +51,17 @@ new(TreeId, LinkedStore = #state{}) ->
     new(TreeId, LinkedStore, []).
 
 new(TreeId, LinkedStore, Options) ->
-    Segments = proplists:get_value(segments, Options, ?NUM_SEGMENTS),
+    NumSegments = proplists:get_value(segments, Options, ?NUM_SEGMENTS),
     Width = proplists:get_value(width, Options, ?WIDTH),
     MemLevels = proplists:get_value(mem_levels, Options, ?MEM_LEVELS),
-    NumLevels = erlang:trunc(math:log(Segments) / math:log(Width)) + 1,
+    NumLevels = erlang:trunc(math:log(NumSegments) / math:log(Width)) + 1,
     State = #state{id=encode_id(TreeId),
                    levels=NumLevels,
-                   segments=Segments,
+                   segments=NumSegments,
                    width=Width,
                    mem_levels=MemLevels,
                    %% dirty_segments=gb_sets:new(),
-                   dirty_segments=bitarray_new(?NUM_SEGMENTS),
+                   dirty_segments=bitarray_new(NumSegments),
                    tree=dict:new()},
     State2 = share_segment_store(State, LinkedStore),
     State2.
@@ -88,7 +88,7 @@ insert(Key, ObjHash, State) ->
 
 insert(Key, ObjHash, State, Opts) ->
     Hash = erlang:phash2(Key),
-    Segment = Hash rem ?NUM_SEGMENTS,
+    Segment = Hash rem State#state.segments,
     HKey = encode(State#state.id, Segment, Key),
     case should_insert(HKey, Opts, State) of
         true ->
@@ -116,27 +116,27 @@ should_insert(HKey, Opts, State) ->
             true
     end.
 
-update_snapshot(State) ->
+update_snapshot(State=#state{segments=NumSegments}) ->
     SnapState = snapshot(State),
-    State2 = SnapState#state{dirty_segments=bitarray_new(?NUM_SEGMENTS)},
+    State2 = SnapState#state{dirty_segments=bitarray_new(NumSegments)},
     {SnapState, State2}.
 
 update_tree(State) ->
     State2 = snapshot(State),
     update_perform(State2).
 
-update_perform(State2=#state{dirty_segments=Dirty}) ->
+update_perform(State2=#state{dirty_segments=Dirty, segments=NumSegments}) ->
     %% Segments = gb_sets:to_list(Dirty),
     Segments = bitarray_to_list(Dirty),
     State3 = update_tree(Segments, State2),
     %% State3#state{dirty_segments=gb_sets:new()}.
-    State3#state{dirty_segments=bitarray_new(?NUM_SEGMENTS)}.
+    State3#state{dirty_segments=bitarray_new(NumSegments)}.
 
 update_tree([], State) ->
     State;
 update_tree(Segments, State) ->
     Hashes = orddict:from_list(hashes(State, Segments)),
-    Groups = group(Hashes),
+    Groups = group(Hashes, State#state.width),
     LastLevel = State#state.levels,
     NewState = update_levels(LastLevel, Groups, State),
     NewState.
@@ -231,15 +231,15 @@ update_levels(Level, Groups, State) ->
                             NewBucket = {Bucket, hash(Hashes3)},
                             {StateAcc2, [NewBucket | BucketsAcc]}
                     end, {State, []}, Groups),
-    Groups2 = group(NewBuckets),
+    Groups2 = group(NewBuckets, State#state.width),
     update_levels(Level - 1, Groups2, NewState).
 
-group(L) ->
+group(L, Width) ->
     {FirstId, _} = hd(L),
-    FirstBucket = FirstId div ?WIDTH,
+    FirstBucket = FirstId div Width,
     {LastBucket, LastGroup, Groups} =
         lists:foldl(fun(X={Id, _}, {LastBucket, Acc, Groups}) ->
-                            Bucket = Id div ?WIDTH,
+                            Bucket = Id div Width,
                             case Bucket of
                                 LastBucket ->
                                     {LastBucket, [X|Acc], Groups};
