@@ -27,14 +27,11 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-register_tree(Index, Pid) ->
-    gen_server:call(?MODULE, {register_tree, Index, Pid}).
-
 get_lock(Type) ->
     get_lock(Type, self()).
 
 get_lock(Type, Pid) ->
-    gen_server:call(?MODULE, {get_lock, Type, Pid}).
+    gen_server:call(?MODULE, {get_lock, Type, Pid}, infinity).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -42,15 +39,13 @@ get_lock(Type, Pid) ->
 
 init([]) ->
     schedule_tick(),
-    {ok, #state{trees=[],
-                tree_queue=[],
-                locks=[],
-                exchanges=[],
-                exchange_queue=[]}}.
+    State = #state{trees=[],
+                   tree_queue=[],
+                   locks=[],
+                   exchanges=[],
+                   exchange_queue=[]},
+    {ok, State}.
 
-handle_call({register_tree, Index, Pid}, _From, State) ->
-    State2 = do_register_tree(Index, Pid, State),
-    {reply, ok, State2};
 handle_call({get_lock, Type, Pid}, _From, State) ->
     {Reply, State2} = do_get_lock(Type, Pid, State),
     {reply, Reply, State2};
@@ -67,12 +62,14 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(tick, State) ->
-    State2 = tick(State),
-    {noreply, State2};
-handle_info({'DOWN', Ref, _, _, _}, State) ->
+    State2 = maybe_reload_hashtrees(State),
+    State3 = tick(State2),
+    {noreply, State3};
+handle_info({'DOWN', Ref, _, Obj, _}, State) ->
     State2 = maybe_release_lock(Ref, State),
     State3 = maybe_clear_exchange(Ref, State2),
-    {noreply, State3};
+    State4 = maybe_clear_registered_tree(Obj, State3),
+    {noreply, State4};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -86,10 +83,29 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-do_register_tree(Index, Pid, State=#state{trees=Trees}) ->
-    Trees2 = orddict:store(Index, Pid, Trees),
+maybe_reload_hashtrees(State) ->
+    case lists:member(riak_kv, riak_core_node_watcher:services(node())) of
+        true ->
+            reload_hashtrees(State);
+        false ->
+            State
+    end.
+
+reload_hashtrees(State=#state{trees=Trees}) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Indices = riak_core_ring:my_indices(Ring),
+    Existing = dict:from_list(Trees),
+    MissingIdx = [Idx || Idx <- Indices,
+                         not dict:is_key(Idx, Existing)],
+    L = [{Idx, Pid} || Idx <- MissingIdx,
+                       {ok,Pid} <- [riak_kv_vnode:hashtree_pid(Idx)],
+                       is_pid(Pid) andalso is_process_alive(Pid)],
+    Trees2 = orddict:from_list(Trees ++ L),
     State2 = State#state{trees=Trees2},
-    State3 = add_index_exchanges(Index, State2),
+    State3 = lists:foldl(fun({Idx,Pid}, StateAcc) ->
+                                 monitor(process, Pid),
+                                 add_index_exchanges(Idx, StateAcc)
+                         end, State2, L),
     State3.
 
 do_get_lock(_Type, Pid, State=#state{locks=Locks}) ->
@@ -115,6 +131,12 @@ maybe_clear_exchange(Ref, State) ->
     end,
     Exchanges = lists:keydelete(Ref, 2, State#state.exchanges),
     State#state{exchanges=Exchanges}.
+
+maybe_clear_registered_tree(Pid, State) when is_pid(Pid) ->
+    Trees = lists:keydelete(Pid, 2, State#state.trees),
+    State#state{trees=Trees};
+maybe_clear_registered_tree(_, State) ->
+    State.
 
 next_tree(#state{trees=[]}) ->
     throw(no_trees_registered);

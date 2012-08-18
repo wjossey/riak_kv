@@ -341,6 +341,11 @@ repair_filter(Target) ->
                                 default_object_nval(),
                                 fun object_info/1).
 
+hashtree_pid(Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        hashtree_pid,
+                                        riak_kv_vnode_master,
+                                        infinity).
 
 %% VNode callbacks
 
@@ -479,6 +484,8 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
     do_fold(FoldWrapper, Acc0, Sender, State);
 
 %% exchange commands
+handle_command(hashtree_pid, _, State=#state{hashtrees=HT}) ->
+    {reply, {ok, HT}, State};
 handle_command({start_exchange_remote, FsmPid, IndexN}, Sender, State) ->
     HT = State#state.hashtrees,
     case index_hashtree:start_exchange_remote(FsmPid, IndexN, HT) of

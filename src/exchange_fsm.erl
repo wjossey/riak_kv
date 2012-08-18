@@ -55,6 +55,8 @@ prepare_exchange(start_exchange, From, State) ->
     prepare_exchange(start_exchange, State#state{from=From}).
 
 prepare_exchange({start_exchange, Tree, From}, State) ->
+    monitor(process, From),
+    monitor(process, Tree),
     prepare_exchange(start_exchange, State#state{local_tree=Tree, from=From});
 
 prepare_exchange(start_exchange, State=#state{local=_LocalVN,
@@ -83,6 +85,7 @@ prepare_exchange(timeout, State) ->
     do_timeout(State);
 prepare_exchange({remote_exchange, Pid}, State) when is_pid(Pid) ->
     State2 = maybe_reply(ok, State),
+    monitor(process, Pid),
     State3 = State2#state{remote_tree=Pid},
     update_trees(start_exchange, State3);
 prepare_exchange({remote_exchange, Error}, State) ->
@@ -190,6 +193,10 @@ handle_sync_event(_Event, _From, _StateName, State) ->
     %% {reply, ok, StateName, State}.
     {stop, badmsg, State}.
 
+handle_info({'DOWN', _, _, _, _}, _StateName, State) ->
+    %% Either the entropy manager, local hashtree, or remote hashtree has
+    %% exited. Stop exchange.
+    {stop, normal, State};
 handle_info(_Info, _StateName, State) ->
     %% {next_state, StateName, State}.
     {stop, badmsg, State}.

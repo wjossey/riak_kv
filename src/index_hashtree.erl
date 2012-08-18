@@ -68,7 +68,7 @@ get_lock(Tree, Type) ->
     get_lock(Tree, Type, self()).
 
 get_lock(Tree, Type, Pid) ->
-    gen_server:call(Tree, {get_lock, Type, Pid}).
+    gen_server:call(Tree, {get_lock, Type, Pid}, infinity).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -79,7 +79,6 @@ init([Index]) ->
     Root = "data/anti",
     Path = filename:join(Root, integer_to_list(Index)),
 
-    entropy_manager:register_tree(Index, self()),
     {ok, #state{index=Index,
                 trees=orddict:new(),
                 built=false,
@@ -90,7 +89,6 @@ init([Index, IndexN]) ->
     Root = "data/anti",
     Path = filename:join(Root, integer_to_list(Index)),
 
-    entropy_manager:register_tree(Index, self()),
     State = #state{index=Index,
                    trees=orddict:new(),
                    built=false,
