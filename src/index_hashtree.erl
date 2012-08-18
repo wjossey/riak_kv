@@ -14,12 +14,15 @@
                 built,
                 lock :: undefined | reference(),
                 path,
+                build_time,
                 trees}).
 
 -compile(export_all).
 
 %% TODO: For testing/dev, make this small. For prod, we should raise this.
 -define(TICK_TIME, 10000).
+%% Time from build to expiration of tree, in microseconds.
+-define(EXPIRE, 10000000).
 
 %%%===================================================================
 %%% API
@@ -101,8 +104,13 @@ init_trees(IndexN, State) ->
                                  do_new_tree(Id, StateAcc)
                          end, State, IndexN),
     Built = load_built(State2),
-    State2#state{built=Built}.
-
+    case Built of
+        true ->
+            State2#state{built=true, build_time=os:timestamp()};
+        false ->
+            State2#state{built=false}
+    end.
+   
 load_built(#state{trees=Trees}) ->
     {_,Tree0} = hd(Trees),
     case hashtree:read_meta(<<"built">>, Tree0) of
@@ -210,6 +218,7 @@ handle_cast(build, State) ->
     {noreply, State2};
 
 handle_cast(build_failed, State) ->
+    gen_server:cast(entropy_manager, {requeue_poke, State#state.index}),
     State2 = State#state{built=false},
     {noreply, State2};
 handle_cast(build_finished, State) ->
@@ -300,7 +309,7 @@ do_build_finished(State=#state{index=Index, built=_Pid}) ->
     lager:info("Finished build (b): ~p", [Index]),
     {_,Tree0} = hd(State#state.trees),
     hashtree:write_meta(<<"built">>, <<1>>, Tree0),
-    State#state{built=true}.
+    State#state{built=true, build_time=os:timestamp()}.
 
 do_insert(Id, Key, Hash, Opts, State=#state{trees=Trees}) ->
     %% lager:info("Insert into ~p/~p :: ~p / ~p", [State#state.index, Id, Key, Hash]),
@@ -350,11 +359,22 @@ schedule_tick() ->
     timer:apply_after(Tick, gen_server, cast, [self(), tick]).
 
 do_tick(State) ->
-    %% State1 = maybe_clear(State),
-    State2 = maybe_build(State),
+    State1 = maybe_clear(State),
+    State2 = maybe_build(State1),
     State2.
 
-maybe_clear(State=#state{lock=undefined, built=true, trees=Trees}) ->
+maybe_clear(State=#state{lock=undefined, built=true}) ->
+    Diff = timer:now_diff(os:timestamp(), State#state.build_time),
+    case Diff > ?EXPIRE of
+        true ->
+            clear_tree(State);
+        false ->
+            State
+    end;
+maybe_clear(State) ->
+    State.
+
+clear_tree(State=#state{trees=Trees}) ->
     lager:info("Clearing tree ~p", [State#state.index]),
     {_,Tree0} = hd(Trees),
     hashtree:destroy(Tree0),
@@ -362,9 +382,7 @@ maybe_clear(State=#state{lock=undefined, built=true, trees=Trees}) ->
     %%       IndexN. Could also solve bucket prop change issue.
     {IndexN,_} = lists:unzip(Trees),
     State2 = init_trees(IndexN, State#state{trees=orddict:new()}),
-    State2#state{built=false};
-maybe_clear(State) ->
-    State.
+    State2#state{built=false}.
 
 maybe_build(State=#state{built=false, index=Index}) ->
     Self = self(),
