@@ -53,6 +53,9 @@ handle_call(Request, From, State) ->
     lager:warning("Unexpected message: ~p from ~p", [Request, From]),
     {reply, ok, State}.
 
+handle_cast({requeue_poke, Index}, State) ->
+    State2 = requeue_poke(Index, State),
+    {noreply, State2};
 %% handle_cast({exchange_status, Pid, RemoteVN, Reply},
 %%             State=#state{exchanging={FsmPid,_}}) when Pid == FsmPid ->
 handle_cast({exchange_status, Pid, LocalVN, RemoteVN, IndexN, Reply}, State) ->
@@ -290,16 +293,27 @@ init_next_exchange(State) ->
     Exchanges = prune_exchanges(all_exchanges(node(), Ring, State)),
     State#state{exchange_queue=Exchanges}.
 
-next_exchange(_Ring, State=#state{exchange_queue=[]}) ->
-    %% %% [Exchange|Rest] = all_pairwise_exchanges(State#state.index, Ring),
-    %% [Exchange|Rest] = prune_exchanges(all_exchanges(node(), Ring, State)),
-    %% State2 = State#state{exchange_queue=Rest},
-    %% {Exchange, State2};
+next_exchange(_Ring, State=#state{exchange_queue=[], trees=[]}) ->
     {none, State};
+next_exchange(Ring, State=#state{exchange_queue=[]}) ->
+    %% %% [Exchange|Rest] = all_pairwise_exchanges(State#state.index, Ring),
+    [Exchange|Rest] = prune_exchanges(all_exchanges(node(), Ring, State)),
+    State2 = State#state{exchange_queue=Rest},
+    {Exchange, State2};
+    %% {none, State};
 next_exchange(_Ring, State=#state{exchange_queue=Exchanges}) ->
     [Exchange|Rest] = Exchanges,
     State2 = State#state{exchange_queue=Rest},
     {Exchange, State2}.
+
+requeue_poke(Index, State=#state{trees=Trees}) ->
+    case orddict:find(Index, Trees) of
+        {ok, Tree} ->
+            Queue = State#state.tree_queue ++ [{Index,Tree}],
+            State#state{tree_queue=Queue};
+        _ ->
+            State
+    end.
 
 requeue_exchange(LocalIdx, RemoteIdx, IndexN, State) ->
     Exchange = {LocalIdx, RemoteIdx, IndexN},
