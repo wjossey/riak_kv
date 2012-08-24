@@ -38,6 +38,7 @@
          fold_objects/4,
          is_empty/1,
          status/1,
+         key_compare/3,
          callback/3]).
 
 -compile({inline, [
@@ -301,6 +302,11 @@ is_empty(#state{ref=Ref}) ->
 status(State) ->
     {ok, Stats} = eleveldb:status(State#state.ref, <<"leveldb.stats">>),
     [{stats, Stats}].
+
+key_compare({Bucket1, Key1}, {Bucket2, Key2}, _State) ->
+    %% shouldn't need to use to_object_key because sext preserves the erlang
+    %% term order
+    {o, Bucket1, Key1} >= {o, Bucket2, Key2}.
 
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.

@@ -54,6 +54,7 @@
          fold_objects/4,
          is_empty/1,
          status/1,
+         key_compare/3,
          callback/3]).
 
 %% "Testing" backend API
@@ -354,6 +355,11 @@ status(#state{data_ref=DataRef,
              {index_table_status, IndexStatus},
              {time_table_status, TimeStatus}]
     end.
+
+key_compare(BKey1, BKey2, _State) ->
+    %% order in the memory backend should not matter, but at least be
+    %% deterministic
+    BKey1 =< BKey2.
 
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.

@@ -40,6 +40,7 @@
          fold_objects/4,
          is_empty/1,
          status/1,
+         key_compare/3,
          callback/3]).
 
 %% Helper API
@@ -355,6 +356,9 @@ status(#state{ref=Ref}) ->
     {KeyCount, Status} = bitcask:status(Ref),
     [{key_count, KeyCount}, {status, Status}].
 
+key_compare(BKey1, BKey2, #state{ref=Ref}) ->
+    bitcask:get_offset(Ref, term_to_binary(BKey1)) =<
+    bitcask:get_offset(Ref, term_to_binary(BKey2)).
 
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.

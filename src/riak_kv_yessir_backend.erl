@@ -94,6 +94,7 @@
          fold_objects/4,
          is_empty/1,
          status/1,
+         key_compare/3,
          callback/3]).
 
 -ifdef(TEST).
@@ -253,6 +254,9 @@ is_empty(_S) ->
 -spec status(state()) -> [{atom(), term()}].
 status(#state{op_put = Puts, op_get = Gets, op_delete = Deletes}) ->
     [{puts, Puts}, {gets, Gets}, {deletes, Deletes}].
+
+key_compare(BKey1, BKey2, _State) ->
+    BKey1 =< BKey2.
 
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.

@@ -38,6 +38,7 @@
          fold_objects/4,
          is_empty/1,
          status/1,
+         key_compare/3,
          callback/3]).
 
 -ifdef(TEST).
@@ -316,6 +317,23 @@ status(#state{backends=Backends}) ->
     %% @TODO Reexamine how this is handled
     [{N, Mod:status(ModState)} || {N, Mod, ModState} <- Backends].
 
+key_compare({Bucket, Key1}, {Bucket, Key2}, State) ->
+    %% both keys in same bucket
+    {_Name, Module, SubState} = get_backend(Bucket, State),
+    Module:key_compare({Bucket, Key1}, {Bucket, Key2}, SubState);
+key_compare({Bucket1, Key1}, {Bucket2, Key2}, State) ->
+    {Name1, Module1, SubState1} = get_backend(Bucket1, State),
+    {Name2, _Module2, _SubState2} = get_backend(Bucket2, State),
+    case Name1 == Name2 of
+        true ->
+            %% same underlying backend
+            Module1:key_compare({Bucket1, Key1}, {Bucket2, Key2}, SubState1);
+        false ->
+            %% different buckets, use the order of the buckets in the list as
+            %% the sort order
+            backend_index(Name1, State) =< backend_index(Name2, State)
+    end.
+
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.
 callback(Ref, Msg, #state{backends=Backends}=State) ->
@@ -446,6 +464,15 @@ error_filter({error, _, _}) ->
     true;
 error_filter(_) ->
     false.
+
+%% @private
+backend_index(Name, State) ->
+    backend_index(Name, State#state.backends, 0).
+
+backend_index(Name, [{Name, _Module, _SubState}|_T], Index) ->
+    Index;
+backend_index(Name, [_H|Tail], Index) ->
+    backend_index(Name, Tail, Index+1).
 
 %% ===================================================================
 %% EUnit tests

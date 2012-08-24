@@ -61,6 +61,7 @@ behaviour_info(callbacks) ->
                          %   FoldObjectsFun(Bucket, Key, Object, Acc)
      {is_empty,1},       % (State)
      {status,1},         % (State)
+     {key_compare,3},    % ({Bucket1, Key1}, {Bucket2, Key2}, State)
      {callback,3}];      % (Ref, Msg, State) ->
 behaviour_info(_Other) ->
     undefined.
