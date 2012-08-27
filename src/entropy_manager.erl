@@ -117,12 +117,12 @@ do_get_lock(_Type, Pid, State=#state{locks=Locks}) ->
             {max_concurrency, State};
         false ->
             Ref = monitor(process, Pid),
-            State2 = State#state{locks=[Ref|Locks]},
+            State2 = State#state{locks=[{Pid,Ref}|Locks]},
             {ok, State2}
     end.
 
 maybe_release_lock(Ref, State) ->
-    Locks = lists:delete(Ref, State#state.locks),
+    Locks = lists:keydelete(Ref, 2, State#state.locks),
     State#state{locks=Locks}.
 
 maybe_clear_exchange(Ref, State) ->
