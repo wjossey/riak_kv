@@ -139,8 +139,8 @@ init(Partition, #fitting_details{options=Options} = FittingDetails) ->
               _ ->
                   []
           end,
-    {ok, #state{acc=Acc, inacc=[], delay=0, delay_max = DelayMax,
-                p=Partition, fd=FittingDetails}}.
+    {ok, [drain], #state{acc=Acc, inacc=[], delay=0, delay_max = DelayMax,
+                         p=Partition, fd=FittingDetails}}.
 
 %% @doc Evaluate the function if the batch is ready.
 -spec process(term(), boolean(), state()) -> {ok, state()}.
@@ -408,6 +408,9 @@ test_helper({ok, State}, Inputs) ->
     lists:foldl(
       fun(I, {ok, S}) -> process(I, true, S) end,
       {ok, State},
-      Inputs).
+      Inputs);
+test_helper({ok, _Props, State}, Inputs) ->
+    %% ignore Props for this synthesis
+    test_helper({ok, State}, Inputs).
 
 -endif.

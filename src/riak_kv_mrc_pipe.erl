@@ -251,6 +251,7 @@ mapred_plan(BucketOrList, Query) ->
 mr2pipe_phases([]) ->
     [#fitting_spec{name=0,
                    module=riak_pipe_w_pass,
+                   arg=[drain],
                    chashfun=follow}];
 mr2pipe_phases(Query) ->
     %% now() is used as a random hash to choose which vnode to collect
