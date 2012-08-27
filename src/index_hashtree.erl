@@ -35,6 +35,7 @@ start_link(Index, IndexN) ->
     gen_server:start_link(?MODULE, [Index, IndexN], []).
 
 new_tree(Id, Tree) ->
+    put(calling, ?LINE),
     gen_server:call(Tree, {new_tree, Id}, infinity).
 
 insert(Id, Key, Hash, Tree) ->
@@ -47,30 +48,37 @@ insert_object(BKey, RObj, Tree) ->
     gen_server:cast(Tree, {insert_object, BKey, RObj}).
 
 start_exchange_remote(FsmPid, IndexN, Tree) ->
+    put(calling, ?LINE),
     gen_server:call(Tree, {start_exchange_remote, FsmPid, IndexN}, infinity).
 
 update(Id, Tree) ->
+    put(calling, ?LINE),
     gen_server:call(Tree, {update_tree, Id}, infinity).
 
 build(Tree) ->
     gen_server:cast(Tree, build).
 
 exchange_bucket(Id, Level, Bucket, Tree) ->
+    put(calling, ?LINE),
     gen_server:call(Tree, {exchange_bucket, Id, Level, Bucket}, infinity).
 
 exchange_segment(Id, Segment, Tree) ->
+    put(calling, ?LINE),
     gen_server:call(Tree, {exchange_segment, Id, Segment}, infinity).
 
 compare(Id, Remote, Tree) ->
     compare(Id, Remote, undefined, Tree).
 
 compare(Id, Remote, AccFun, Tree) ->
+    put(calling, ?LINE),
     gen_server:call(Tree, {compare, Id, Remote, AccFun}, infinity).
 
 get_lock(Tree, Type) ->
     get_lock(Tree, Type, self()).
 
 get_lock(Tree, Type, Pid) ->
+    put(tree, Tree),
+    put(calling, ?LINE),
     gen_server:call(Tree, {get_lock, Type, Pid}, infinity).
 
 %%%===================================================================
