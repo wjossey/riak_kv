@@ -258,12 +258,13 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 do_new_tree(Id, State=#state{trees=Trees, path=Path}) ->
+    Index = State#state.index,
     IdBin = tree_id(Id),
     NewTree = case Trees of
                   [] ->
-                      hashtree:new(IdBin, [{segment_path, Path}]);
+                      hashtree:new({Index,IdBin}, [{segment_path, Path}]);
                   [{_,Other}|_] ->
-                      hashtree:new(IdBin, Other)
+                      hashtree:new({Index,IdBin}, Other)
               end,
     Trees2 = orddict:store(Id, NewTree, Trees),
     State#state{trees=Trees2}.

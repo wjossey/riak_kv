@@ -24,6 +24,7 @@
 -define(MEM_LEVELS, 0).
 
 -record(state, {id,
+                index,
                 levels,
                 segments,
                 width,
@@ -51,12 +52,13 @@ new(TreeId, Options) when is_list(Options) ->
 new(TreeId, LinkedStore = #state{}) ->
     new(TreeId, LinkedStore, []).
 
-new(TreeId, LinkedStore, Options) ->
+new({Index,TreeId}, LinkedStore, Options) ->
     NumSegments = proplists:get_value(segments, Options, ?NUM_SEGMENTS),
     Width = proplists:get_value(width, Options, ?WIDTH),
     MemLevels = proplists:get_value(mem_levels, Options, ?MEM_LEVELS),
     NumLevels = erlang:trunc(math:log(NumSegments) / math:log(Width)) + 1,
     State = #state{id=encode_id(TreeId),
+                   index=Index,
                    levels=NumLevels,
                    segments=NumSegments,
                    width=Width,
