@@ -111,13 +111,7 @@ init_trees(IndexN, State) ->
     State2 = lists:foldl(fun(Id, StateAcc) ->
                                  do_new_tree(Id, StateAcc)
                          end, State, IndexN),
-    Built = load_built(State2),
-    case Built of
-        true ->
-            State2#state{built=true, build_time=os:timestamp()};
-        false ->
-            State2#state{built=false}
-    end.
+    State2#state{built=false}.
    
 load_built(#state{trees=Trees}) ->
     {_,Tree0} = hd(Trees),
@@ -393,20 +387,31 @@ clear_tree(State=#state{trees=Trees}) ->
     State2 = init_trees(IndexN, State#state{trees=orddict:new()}),
     State2#state{built=false}.
 
-maybe_build(State=#state{built=false, index=Index}) ->
+maybe_build(State=#state{built=false}) ->
     Self = self(),
     Pid = spawn_link(fun() ->
                              case entropy_manager:get_lock(build) of
                                  max_concurrency ->
                                      gen_server:cast(Self, build_failed);
                                  ok ->
-                                     lager:info("Starting build: ~p", [Index]),
-                                     fold_keys(Index, Self),
-                                     lager:info("Finished build (a): ~p", [Index]),
-                                     gen_server:cast(Self, build_finished)
+                                     build_or_rehash(Self, State)
                              end
                      end),
     State#state{built=Pid};
 maybe_build(State) ->
     %% Already built or build in progress
     State.
+
+build_or_rehash(Self, State=#state{index=Index, trees=Trees}) ->
+    case load_built(State) of
+        false ->
+            lager:info("Starting build: ~p", [Index]),
+            fold_keys(Index, Self),
+            lager:info("Finished build (a): ~p", [Index]), 
+            gen_server:cast(Self, build_finished);
+        true ->
+            lager:info("Starting rehash: ~p", [Index]),
+            _ = [hashtree:rehash_tree(T) || {_,T} <- Trees],
+            lager:info("Finished rehash (a): ~p", [Index]),
+            gen_server:cast(Self, build_finished)
+    end.
