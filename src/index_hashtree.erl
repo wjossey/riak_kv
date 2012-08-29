@@ -19,8 +19,6 @@
 
 -compile(export_all).
 
-%% TODO: For testing/dev, make this small. For prod, we should raise this.
--define(TICK_TIME, 10000).
 %% Time from build to expiration of tree, in microseconds.
 -define(EXPIRE, 10000000).
 
@@ -89,7 +87,6 @@ get_lock(Tree, Type, Pid) ->
 %%%===================================================================
 
 init([Index]) ->
-    %% schedule_tick(),
     Root = "data/anti",
     Path = filename:join(Root, integer_to_list(Index)),
 
@@ -99,7 +96,6 @@ init([Index]) ->
                 path=Path}};
 
 init([Index, IndexN]) ->
-    %% schedule_tick(),
     Root = "data/anti",
     Path = filename:join(Root, integer_to_list(Index)),
 
@@ -213,9 +209,8 @@ handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
-handle_cast(tick, State) ->
-    State2 = do_tick(State),
-    %% schedule_tick(),
+handle_cast(poke, State) ->
+    State2 = do_poke(State),
     {noreply, State2};
 
 handle_cast(build, State) ->
@@ -247,10 +242,6 @@ handle_cast({delete, BKey}, State) ->
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
-
-handle_info(tick, State) ->
-    State2 = do_tick(State),
-    {noreply, State2};
 
 handle_info({'DOWN', Ref, _, _, _}, State) ->
     State2 = maybe_release_lock(Ref, State),
@@ -386,11 +377,7 @@ get_index_n({Bucket, Key}, Ring) ->
     Index = riak_core_ring:responsible_index(ChashKey, Ring),
     {Index, N}.
 
-schedule_tick() ->
-    Tick = ?TICK_TIME,
-    timer:apply_after(Tick, gen_server, cast, [self(), tick]).
-
-do_tick(State) ->
+do_poke(State) ->
     State1 = maybe_clear(State),
     State2 = maybe_build(State1),
     State2.
