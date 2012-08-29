@@ -483,7 +483,7 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
                   end,
     do_fold(FoldWrapper, Acc0, Sender, State);
 
-%% exchange commands
+%% entropy exchange commands
 handle_command(hashtree_pid, _, State=#state{hashtrees=HT}) ->
     {reply, {ok, HT}, State};
 handle_command({start_exchange_remote, FsmPid, IndexN}, Sender, State) ->
@@ -494,39 +494,6 @@ handle_command({start_exchange_remote, FsmPid, IndexN}, Sender, State) ->
         Error ->
             riak_core_vnode:reply(Sender, {remote_exchange, Error})
     end,
-    {noreply, State};
-
-handle_command({update_tree, IndexN}, Sender, State) ->
-    spawn(fun() ->
-                  case index_hashtree:update(IndexN, State#state.hashtrees) of
-                      ok ->
-                          Reply = {tree_built, State#state.idx, IndexN},
-                          riak_core_vnode:reply(Sender, Reply);
-                      not_responsible ->
-                          Reply = {not_responsible, State#state.idx, IndexN},
-                          riak_core_vnode:reply(Sender, Reply)
-                  end
-          end),
-    {noreply, State};
-
-handle_command({exchange_bucket, IndexN, Level, Bucket}, _Sender, State) ->
-    Result = index_hashtree:exchange_bucket(IndexN, Level, Bucket, State#state.hashtrees),
-    %% Reply = {bucket, State#state.idx, IndexN, Result},
-    %% {reply, Reply, State};
-    {reply, Result, State};
-
-handle_command({exchange_segment, IndexN, Segment}, _Sender, State) ->
-    Result = index_hashtree:exchange_segment(IndexN, Segment, State#state.hashtrees),
-    %% Reply = {segment, State#state.idx, IndexN, Result},
-    %% {reply, Reply, State};
-    {reply, Result, State};
-
-handle_command({compare_trees, IndexN, Remote}, Sender, State) ->
-    spawn(fun() ->
-                  Result = index_hashtree:compare(IndexN, Remote, State#state.hashtrees),
-                  Reply = {keydiff, State#state.idx, IndexN, Result},
-                  riak_core_vnode:reply(Sender, Reply)
-          end),
     {noreply, State};
 
 %% Commands originating from inside this vnode

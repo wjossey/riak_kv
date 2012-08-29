@@ -56,8 +56,6 @@ handle_call(Request, From, State) ->
 handle_cast({requeue_poke, Index}, State) ->
     State2 = requeue_poke(Index, State),
     {noreply, State2};
-%% handle_cast({exchange_status, Pid, RemoteVN, Reply},
-%%             State=#state{exchanging={FsmPid,_}}) when Pid == FsmPid ->
 handle_cast({exchange_status, Pid, LocalVN, RemoteVN, IndexN, Reply}, State) ->
     State2 = do_exchange_status(Pid, LocalVN, RemoteVN, IndexN, Reply, State),
     {noreply, State2};
@@ -153,11 +151,10 @@ next_tree(State=#state{tree_queue=Queue}) ->
     {Pid, State2}.
 
 schedule_tick() ->
-    %% Tick = app_helper:get_env(riak_core,
-    %%                           claimant_tick,
-    %%                           10000),
-    Tick = 1000,
-    %% Tick = 10,
+    DefaultTick = 1000,
+    Tick = app_helper:get_env(riak_kv,
+                              entropy_tick,
+                              DefaultTick),
     erlang:send_after(Tick, ?MODULE, tick).
 
 tick(State) ->
@@ -172,7 +169,7 @@ maybe_poke_tree(State=#state{trees=[]}) ->
     State;
 maybe_poke_tree(State) ->
     {Tree, State2} = next_tree(State),
-    Tree ! tick,
+    gen_server:cast(Tree, poke),
     State2.
 
 %%%===================================================================
@@ -276,17 +273,6 @@ maybe_exchange(State) ->
                     end
             end
     end.
-    %% {NextExchange, State2} = next_exchange(Ring, State),
-    %% {LocalIdx, RemoteIdx, IndexN} = NextExchange,
-    %% LocalVN = {LocalIdx, node()},
-    %% io:format("SE: ~p~n", [[LocalVN, {RemoteIdx, IndexN}]]),
-    %% case start_exchange(LocalVN, {RemoteIdx, IndexN}, Ring, State2) of
-    %%     {ok, State3} ->
-    %%         State3;
-    %%     {_Reason, State3} ->
-    %%         %% lager:info("ExchangeQ: ~p", [Reason]),
-    %%         State3
-    %% end.
 
 init_next_exchange(State) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),

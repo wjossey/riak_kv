@@ -112,9 +112,7 @@ update_trees({not_responsible, VNodeIdx, IndexN}, State) ->
     maybe_reply({not_responsible, VNodeIdx, IndexN}, State),
     {stop, normal, State};
 update_trees({tree_built, _, _}, State) ->
-    %% lager:info("R: ~p", [Result]),
     Built = State#state.built + 1,
-    %% {stop, normal, State}.
     case Built of
         2 ->
             lager:info("Moving to key exchange"),
@@ -130,16 +128,6 @@ key_exchange(timeout, State=#state{local=LocalVN,
                                    index_n=IndexN}) ->
     lager:info("Starting key exchange between ~p and ~p", [LocalVN, RemoteVN]),
     lager:info("Exchanging hashes for preflist ~p", [IndexN]),
-    %% R1 = riak_core_vnode_master:sync_command(LocalVN,
-    %%                                          {exchange_bucket, Index, 1, 0},
-    %%                                          riak_kv_vnode_master),
-    %% R2 = riak_core_vnode_master:sync_command(RemoteVN,
-    %%                                          {exchange_bucket, Index, 1, 0},
-    %%                                          riak_kv_vnode_master),
-
-
-    %% lager:info("R1: ~p", [R1]),
-    %% lager:info("R2: ~p", [R2]),
 
     Remote = fun(get_bucket, {L, B}) ->
                      exchange_bucket(RemoteTree, IndexN, L, B);
@@ -254,8 +242,3 @@ next_state_with_timeout(StateName, State) ->
     next_state_with_timeout(StateName, State, ?DEFAULT_ACTION_TIMEOUT).
 next_state_with_timeout(StateName, State, Timeout) ->
     {next_state, StateName, State, Timeout}.
-
-%% reply_with_timeout(Reply, StateName, State) ->
-%%     reply_with_timeout(Reply, StateName, State, ?DEFAULT_ACTION_TIMEOUT).
-%% reply_with_timeout(Reply, StateName, State, Timeout) ->
-%%     {reply, Reply, StateName, State, Timeout}.
