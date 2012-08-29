@@ -331,8 +331,8 @@ do_insert(Id, Key, Hash, Opts, State=#state{trees=Trees}) ->
             Trees2 = orddict:store(Id, Tree2, Trees),
             State#state{trees=Trees2};
         _ ->
-            handle_unexpected_key(Id, Key, State),
-            State
+            State2 = handle_unexpected_key(Id, Key, State),
+            State2
     end.
 
 do_delete(Id, Key, State=#state{trees=Trees}) ->
@@ -342,22 +342,31 @@ do_delete(Id, Key, State=#state{trees=Trees}) ->
             Trees2 = orddict:store(Id, Tree2, Trees),
             State#state{trees=Trees2};
         _ ->
-            handle_unexpected_key(Id, Key, State),
-            State
+            State2 = handle_unexpected_key(Id, Key, State),
+            State2
     end.
 
-handle_unexpected_key(Id, Key, #state{index=Partition}) ->
+handle_unexpected_key(Id, Key, State=#state{index=Partition}) ->
     RP = riak_kv_vnode:responsible_preflists(Partition),
     case lists:member(Id, RP) of
         false ->
             lager:warning("Object ~p encountered during fold over partition "
                           "~p, but key does not hash to an index handled by "
                           "this partition", [Key, Partition]),
-            ok;
+            State;
         true ->
             lager:info("Partition/tree ~p/~p does not exist to hold object ~p",
                        [Partition, Id, Key]),
-            ok
+            case State#state.built of
+                true ->
+                    lager:info("Clearing tree to trigger future rebuild"),
+                    clear_tree(State);
+                _ ->
+                    %% Initialize new index_n tree to prevent future errors,
+                    %% but state may be inconsistent until future rebuild
+                    State2 = do_new_tree(Id, State),
+                    State2
+            end
     end.
 
 tree_id({Index, N}) ->
@@ -397,13 +406,11 @@ maybe_clear(State=#state{lock=undefined, built=true}) ->
 maybe_clear(State) ->
     State.
 
-clear_tree(State=#state{trees=Trees}) ->
+clear_tree(State=#state{index=Index, trees=Trees}) ->
     lager:info("Clearing tree ~p", [State#state.index]),
     {_,Tree0} = hd(Trees),
     hashtree:destroy(Tree0),
-    %% TODO: Consider re-generating reponsible preflists here to determine
-    %%       IndexN. Could also solve bucket prop change issue.
-    {IndexN,_} = lists:unzip(Trees),
+    IndexN = riak_kv_vnode:responsible_preflists(Index),
     State2 = init_trees(IndexN, State#state{trees=orddict:new()}),
     State2#state{built=false}.
 
