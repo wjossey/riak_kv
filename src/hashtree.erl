@@ -5,6 +5,7 @@
          update_tree/1,
          update_snapshot/1,
          update_perform/1,
+         rehash_tree/1,
          destroy/1,
          local_compare/2,
          compare/2,
@@ -152,6 +153,22 @@ update_tree(Segments, State) ->
     LastLevel = State#state.levels,
     NewState = update_levels(LastLevel, Groups, State),
     NewState.
+
+rehash_tree(State) ->
+    State2 = snapshot(State),
+    rehash_perform(State2).
+
+rehash_perform(State) ->
+    Hashes = orddict:from_list(hashes(State, ['*', '*'])),
+    case Hashes of
+        [] ->
+            State;
+        _ ->
+            Groups = group(Hashes, State#state.width),
+            LastLevel = State#state.levels,
+            NewState = update_levels(LastLevel, Groups, State),
+            NewState
+    end.
 
 top_hash(State) ->
     get_bucket(1, 0, State).
@@ -340,16 +357,37 @@ snapshot(State) ->
 multi_select_segment(#state{id=Id, itr=Itr}, Segments, F) ->
     [First | Rest] = Segments,
     Acc0 = {Itr, Id, First, Rest, F, [], []},
-    Seek = encode(Id, First, <<>>),
+    Seek = case First of
+               '*' ->
+                   encode(Id, 0, <<>>);
+               _ ->
+                   encode(Id, First, <<>>)
+           end,
     {_, _, LastSegment, _, _, LastAcc, FA} =
         iterate(eleveldb:iterator_move(Itr, Seek), Acc0),
-    [{LastSegment, F(LastAcc)} | FA].
+    Result = [{LastSegment, F(LastAcc)} | FA],
+    case Result of
+        [{'*', _}] ->
+            %% Handle wildcard select when all segments are empty
+            [];
+        _ ->
+            Result
+    end.
 
 iterate({error, invalid_iterator}, AllAcc) ->
     AllAcc;
-iterate({ok, K, V}, AllAcc={Itr, Id, Segment, Segments, F, Acc, FinalAcc}) ->
+iterate({ok, K, V}, AllAcc={Itr, Id, SegmentP, Segments, F, Acc, FinalAcc}) ->
     {SegId, Seg, _} = safe_decode(K),
-    case {SegId, Seg, Segments} of
+    Segment = case SegmentP of
+                  '*' ->
+                      Seg;
+                  _ ->
+                      SegmentP
+              end,
+   case {SegId, Seg, Segments} of
+        {-1, -1, _} ->
+            %% Non-segment encountered, end traversal
+            AllAcc;
         {Id, Segment, _} ->
             %% Still reading existing segment
             Acc2 = {Itr, Id, Segment, Segments, F, [{K,V} | Acc], FinalAcc},
@@ -357,6 +395,10 @@ iterate({ok, K, V}, AllAcc={Itr, Id, Segment, Segments, F, Acc, FinalAcc}) ->
         {Id, _, [Seg|Remaining]} ->
             %% Pointing at next segment we are interested in
             Acc2 = {Itr, Id, Seg, Remaining, F, [{K,V}], [{Segment, F(Acc)} | FinalAcc]},
+            iterate(eleveldb:iterator_move(Itr, next), Acc2);
+        {Id, _, ['*']} ->
+            %% Pointing at next segment we are interested in
+            Acc2 = {Itr, Id, Seg, ['*'], F, [{K,V}], [{Segment, F(Acc)} | FinalAcc]},
             iterate(eleveldb:iterator_move(Itr, next), Acc2);
         {Id, _, [NextSeg|Remaining]} ->
             %% Pointing at uninteresting segment, seek to next interesting one
