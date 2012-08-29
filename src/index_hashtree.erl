@@ -47,6 +47,9 @@ insert(Id, Key, Hash, Tree, Options) ->
 insert_object(BKey, RObj, Tree) ->
     gen_server:cast(Tree, {insert_object, BKey, RObj}).
 
+delete(BKey, Tree) ->
+    gen_server:cast(Tree, {delete, BKey}).
+
 start_exchange_remote(FsmPid, IndexN, Tree) ->
     put(calling, ?LINE),
     gen_server:call(Tree, {start_exchange_remote, FsmPid, IndexN}, infinity).
@@ -236,6 +239,12 @@ handle_cast({insert_object, BKey, RObj}, State) ->
     IndexN = get_index_n(BKey, Ring),
     State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), [], State),
     {noreply, State2};
+handle_cast({delete, BKey}, State) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    IndexN = get_index_n(BKey, Ring),
+    State2 = do_delete(IndexN, term_to_binary(BKey), State),
+    {noreply, State2};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -319,6 +328,17 @@ do_insert(Id, Key, Hash, Opts, State=#state{trees=Trees}) ->
     case orddict:find(Id, Trees) of
         {ok, Tree} ->
             Tree2 = hashtree:insert(Key, Hash, Tree, Opts),
+            Trees2 = orddict:store(Id, Tree2, Trees),
+            State#state{trees=Trees2};
+        _ ->
+            handle_unexpected_key(Id, Key, State),
+            State
+    end.
+
+do_delete(Id, Key, State=#state{trees=Trees}) ->
+    case orddict:find(Id, Trees) of
+        {ok, Tree} ->
+            Tree2 = hashtree:delete(Key, Tree),
             Trees2 = orddict:store(Id, Tree2, Trees),
             State#state{trees=Trees2};
         _ ->
