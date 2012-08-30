@@ -168,8 +168,8 @@ done(#state{acc=Acc0, inacc=InAcc, delay=Delay, p=Partition, fd=FittingDetails} 
              true ->
                   reduce(Acc0 ++ lists:reverse(InAcc), S, "done()")
           end,
-    [ riak_pipe_vnode_worker:send_output(O, Partition, FittingDetails)
-      || O <- Acc ],
+    riak_pipe_vnode_worker:send_output_list(
+      Acc, Partition, FittingDetails),
     ok.
 
 %% @doc The archive is the accumulator.

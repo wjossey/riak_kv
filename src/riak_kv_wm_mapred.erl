@@ -254,7 +254,13 @@ pipe_collect_outputs(Pipe, NumKeeps, Sender) ->
     Ref = (Pipe#pipe.sink)#fitting.ref,
     case pipe_collect_outputs1(Ref, Sender, []) of
         {ok, Outputs} ->
-            {ok, riak_kv_mrc_pipe:group_outputs(Outputs, NumKeeps)};
+            Grouped = riak_kv_mrc_pipe:group_outputs(Outputs, NumKeeps),
+            if NumKeeps < 2 ->
+                    Appended = lists:append(Grouped);
+               true ->
+                    Appended = [ lists:append(O) || O <- Grouped ]
+            end,
+            {ok, Appended};
         Error ->
             Error
     end.
@@ -271,7 +277,9 @@ pipe_receive_output(Ref, {SenderPid, SenderRef}) ->
         #pipe_eoi{ref=Ref} ->
             eoi;
         #pipe_result{ref=Ref, from=From, result=Result} ->
-            {ok, {From, Result}};
+            {ok, {From, [Result]}};
+        #pipe_result_list{ref=Ref, from=From, results=Results} ->
+            {ok, {From, Results}};
         #pipe_log{ref=Ref, from=From, msg=Msg} ->
             case Msg of
                 {trace, [error], {error, Info}} ->
@@ -309,11 +317,12 @@ pipe_stream_mapred_results(RD, Pipe,
                            #state{boundary=Boundary}=State, 
                            Sender, PipeTref) ->
     case pipe_receive_output((Pipe#pipe.sink)#fitting.ref, Sender) of
-        {ok, {PhaseId, Result}} ->
+        {ok, {PhaseId, Results}} ->
             %% results come out of pipe one
             %% at a time but they're supposed to
             %% be in a list at the client end
-            JSONResults = [riak_kv_mapred_json:jsonify_not_found(Result)],
+            JSONResults = [riak_kv_mapred_json:jsonify_not_found(R)
+                           || R <- Results],
             HasMRQuery = State#state.mrquery /= [],
             JSONResults1 = riak_kv_mapred_json:jsonify_bkeys(JSONResults, HasMRQuery),
             Data = mochijson2:encode({struct, [{phase, PhaseId},

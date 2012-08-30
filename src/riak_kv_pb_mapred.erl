@@ -104,6 +104,20 @@ process_stream(#pipe_result{ref=ReqId, from=PhaseId, result=Res},
             {reply, #rpbmapredresp{phase=PhaseId, response=Response}, State}
     end;
 
+process_stream(#pipe_result_list{ref=ReqId, from=PhaseId, results=Res},
+               ReqId,
+               State=#state{req=#rpbmapredreq{content_type = ContentType},
+                            req_ctx=#pipe_ctx{ref=ReqId, has_mr_query=HasMRQuery}=PipeCtx}) ->
+    case encode_mapred_phase(Res, ContentType, HasMRQuery) of
+        {error, Reason} ->
+            erlang:cancel_timer(PipeCtx#pipe_ctx.timer),
+            %% destroying the pipe will automatically kill the sender
+            riak_pipe:destroy(PipeCtx#pipe_ctx.pipe),
+            {error, Reason, State#state{req = undefined, req_ctx = undefined}};
+        Response ->
+            {reply, #rpbmapredresp{phase=PhaseId, response=Response}, State}
+    end;
+
 process_stream(#pipe_log{ref=ReqId, from=From, msg=Msg},
                ReqId,
                State=#state{req=#rpbmapredreq{},
