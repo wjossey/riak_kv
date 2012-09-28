@@ -94,15 +94,16 @@ keysend_loop(ReqId, Partition, FittingDetails) ->
             ok
     end.
 
-keysend(_Bucket, [], _Partition, _FittingDetails) ->
-    ok;
-keysend(Bucket, [Key | Keys], Partition, FittingDetails) ->
-    case riak_pipe_vnode_worker:send_output(
-           {Bucket, Key}, Partition, FittingDetails) of
-        ok ->
-            keysend(Bucket, Keys, Partition, FittingDetails);
-        ER ->
-            ER
+keysend(Bucket, Keys, Partition, FittingDetails) ->
+    Outputs = [ {Bucket, Key} || Key <- Keys ],
+    case riak_pipe_vnode_worker:send_output_list(
+           Outputs, Partition, FittingDetails) of
+        {ok, []} ->
+            ok;
+        {error,_}=Error ->
+            %% we're using infinity timeout, so we should never get
+            %% {ok, X} where X =/= []
+            Error
     end.
 
 %% @doc Unused.
