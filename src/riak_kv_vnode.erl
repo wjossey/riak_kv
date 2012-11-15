@@ -194,7 +194,7 @@ get_vclocks(Preflist, BKeyList) ->
 %% @doc Get status information about the node local vnodes.
 -spec vnode_status([{partition(), pid()}]) -> [{atom(), term()}].
 vnode_status(PrefLists) ->
-    ReqId = erlang:phash2(erlang:now()),
+    ReqId = erlang:phash2({self(), os:timestamp()}),
     %% Get the status of each vnode
     riak_core_vnode_master:command(PrefLists,
                                    ?KV_VNODE_STATUS_REQ{},
@@ -237,6 +237,7 @@ init([Index]) ->
     BucketBufSize = app_helper:get_env(riak_kv, bucket_buffer_size, 1000),
     IndexBufSize = app_helper:get_env(riak_kv, index_buffer_size, 100),
     KeyBufSize = app_helper:get_env(riak_kv, key_buffer_size, 100),
+    WorkerPoolSize = app_helper:get_env(riak_kv, worker_pool_size, 10),
     {ok, VId} = get_vnodeid(Index),
     DeleteMode = app_helper:get_env(riak_kv, delete_mode, 3000),
     AsyncFolding = app_helper:get_env(riak_kv, async_folds, true) == true,
@@ -256,7 +257,7 @@ init([Index]) ->
             case AsyncFolding of
                 true ->
                     %% Create worker pool initialization tuple
-                    FoldWorkerPool = {pool, riak_kv_worker, 10, []},
+                    FoldWorkerPool = {pool, riak_kv_worker, WorkerPoolSize, []},
                     {ok, State, [FoldWorkerPool]};
                 false ->
                     {ok, State}
@@ -280,18 +281,16 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            start_time=StartTime,
                            options=Options},
                Sender, State=#state{idx=Idx}) ->
-    riak_kv_mapred_cache:eject(BKey),
+    StartTS = os:timestamp(),
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
     UpdState = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
+    update_vnode_stats(vnode_put, Idx, StartTS),
     {noreply, UpdState};
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
     do_get(Sender, BKey, ReqId, State);
 handle_command(?KV_MGET_REQ{bkeys=BKeys, req_id=ReqId, from=From}, _Sender, State) ->
     do_mget(From, BKeys, ReqId, State);
-handle_command(#riak_kv_listkeys_req_v1{bucket=Bucket, req_id=ReqId}, _Sender,
-               State=#state{mod=Mod, modstate=ModState, idx=Idx}) ->
-    do_legacy_list_bucket(ReqId,Bucket,Mod,ModState,Idx,State);
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
                State=#state{async_folding=AsyncFolding,
                             key_buf_size=BufferSize,
@@ -436,68 +435,61 @@ handle_coverage(#riak_kv_listkeys_req_v3{bucket=Bucket,
                 FilterVNodes, Sender, State) ->
     %% v3 == no backpressure
     ResultFun = result_fun(Bucket, Sender),
-    handle_coverage_listkeys(Bucket, ItemFilter, ResultFun,
-                             FilterVNodes, Sender, State);
+    Opts = [{bucket, Bucket}],
+    handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
+                            FilterVNodes, Sender, Opts, State);
 handle_coverage(?KV_LISTKEYS_REQ{bucket=Bucket,
                                  item_filter=ItemFilter},
                 FilterVNodes, Sender, State) ->
     %% v4 == ack-based backpressure
     ResultFun = result_fun_ack(Bucket, Sender),
-    handle_coverage_listkeys(Bucket, ItemFilter, ResultFun,
-                             FilterVNodes, Sender, State);
+    Opts = [{bucket, Bucket}],
+    handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
+                            FilterVNodes, Sender, Opts, State);
+handle_coverage(#riak_kv_index_req_v1{bucket=Bucket,
+                              item_filter=ItemFilter,
+                              qry=Query},
+                FilterVNodes, Sender, State) ->
+    %% v1 == no backpressure
+    handle_coverage_index(Bucket, ItemFilter, Query,
+                          FilterVNodes, Sender, State, fun result_fun/2);
 handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
                               item_filter=ItemFilter,
                               qry=Query},
-                FilterVNodes,
-                Sender,
-                State=#state{async_folding=AsyncFolding,
-                             idx=Index,
-                             index_buf_size=BufferSize,
-                             mod=Mod,
-                             modstate=ModState}) ->
+                FilterVNodes, Sender, State) ->
+    %% v2 = ack-based backpressure
+    handle_coverage_index(Bucket, ItemFilter, Query,
+                          FilterVNodes, Sender, State, fun result_fun_ack/2).
 
+handle_coverage_index(Bucket, ItemFilter, Query,
+                      FilterVNodes, Sender,
+                      State=#state{mod=Mod,
+                                   modstate=ModState},
+                      ResultFunFun) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
-    AsyncBackend = lists:member(async_fold, Capabilities),
     case IndexBackend of
         true ->
             %% Update stats...
             riak_kv_stat:update(vnode_index_read),
 
-            %% Construct the filter function
-            FilterVNode = proplists:get_value(Index, FilterVNodes),
-            Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
-            BufferMod = riak_kv_fold_buffer,
-            Buffer = BufferMod:new(BufferSize, result_fun(Bucket, Sender)),
-            FoldFun = fold_fun(keys, BufferMod, Filter),
-            FinishFun = finish_fun(BufferMod, Sender),
-            case AsyncFolding andalso AsyncBackend of
-                true ->
-                    Opts = [async_fold,
-                            {index, Bucket, Query},
-                            {bucket, Bucket}];
-                false ->
-                    Opts = [{index, Bucket, Query},
-                            {bucket, Bucket}]
-            end,
-            case list(FoldFun, FinishFun, Mod, fold_keys, ModState, Opts, Buffer) of
-                {async, AsyncWork} ->
-                    {async, {fold, AsyncWork, FinishFun}, Sender, State};
-                _ ->
-                    {noreply, State}
-            end;
+            ResultFun = ResultFunFun(Bucket, Sender),
+            Opts = [{index, Bucket, Query},
+                    {bucket, Bucket}],
+            handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
+                                    FilterVNodes, Sender, Opts, State);
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
     end.
 
-%% Convenience for handling both v3 and v4 coverage-based listkeys
-handle_coverage_listkeys(Bucket, ItemFilter, ResultFun,
-                         FilterVNodes, Sender,
-                         State=#state{async_folding=AsyncFolding,
-                             idx=Index,
-                             key_buf_size=BufferSize,
-                             mod=Mod,
-                             modstate=ModState}) ->
+%% Convenience for handling both v3 and v4 coverage-based key fold operations
+handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
+                        FilterVNodes, Sender, Opts0,
+                        State=#state{async_folding=AsyncFolding,
+                                     idx=Index,
+                                     key_buf_size=BufferSize,
+                                     mod=Mod,
+                                     modstate=ModState}) ->
     %% Construct the filter function
     FilterVNode = proplists:get_value(Index, FilterVNodes),
     Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode),
@@ -509,9 +501,9 @@ handle_coverage_listkeys(Bucket, ItemFilter, ResultFun,
     AsyncBackend = lists:member(async_fold, Capabilities),
     case AsyncFolding andalso AsyncBackend of
         true ->
-            Opts = [async_fold, {bucket, Bucket}];
+            Opts = [async_fold | Opts0];
         false ->
-            Opts = [{bucket, Bucket}]
+            Opts = Opts0
     end,
     case list(FoldFun, FinishFun, Mod, fold_keys, ModState, Opts, Buffer) of
         {async, AsyncWork} ->
@@ -638,12 +630,10 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
     riak_core_vnode:reply(Sender, Reply),
 
     update_index_write_stats(UpdPutArgs#putargs.is_index, UpdPutArgs#putargs.index_specs),
-    riak_kv_stat:update(vnode_put),
     UpdState.
 
 do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
     %% object is a tombstone or all siblings are tombstones
-    riak_kv_mapred_cache:eject(BKey),
 
     %% Calculate the index specs to remove...
     %% JDM: This should just be a tombstone by this point, but better
@@ -832,12 +822,14 @@ put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
 %% @private
 do_get(_Sender, BKey, ReqID,
        State=#state{idx=Idx,mod=Mod,modstate=ModState}) ->
+    StartTS = os:timestamp(),
     Retval = do_get_term(BKey, Mod, ModState),
-    riak_kv_stat:update(vnode_get),
+    update_vnode_stats(vnode_get, Idx, StartTS),
     {reply, {r, Retval, Idx, ReqID}, State}.
 
 do_mget({fsm, Sender}, BKeys, ReqId, State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
     F = fun(BKey) ->
+                StartTS = os:timestamp(),
                 R = do_get_term(BKey, Mod, ModState),
                 case R of
                     {ok, Obj} ->
@@ -845,7 +837,7 @@ do_mget({fsm, Sender}, BKeys, ReqId, State=#state{idx=Idx, mod=Mod, modstate=Mod
                     _ ->
                         gen_fsm:send_event(Sender, {r, {R, BKey}, Idx, ReqId})
                 end,
-                riak_kv_stat:update(vnode_get) end,
+                update_vnode_stats(vnode_get, Idx, StartTS) end,
     [F(BKey) || BKey <- BKeys],
     {noreply, State}.
 
@@ -955,29 +947,6 @@ finish_fold(BufferMod, Buffer, Sender) ->
     riak_core_vnode:reply(Sender, done).
 
 %% @private
-%% @deprecated This function is only here to support
-%% rolling upgrades and will be removed.
-do_legacy_list_bucket(ReqID,'_',Mod,ModState,Idx,State) ->
-    FoldBucketsFun =
-        fun(Bucket, Buf) ->
-                [Bucket | Buf]
-        end,
-    RetVal = Mod:fold_buckets(FoldBucketsFun, [], [], ModState),
-    {reply, {kl, RetVal, Idx, ReqID}, State};
-do_legacy_list_bucket(ReqID,Bucket,Mod,ModState,Idx,State) ->
-    FoldKeysFun =
-        fun(_, Key, Buf) ->
-                [Key | Buf]
-        end,
-    Opts = [{bucket, Bucket}],
-    case Mod:fold_keys(FoldKeysFun, [], Opts, ModState) of
-        {ok, RetVal} ->
-            {reply, {kl, RetVal, Idx, ReqID}, State};
-        {error, Reason} ->
-            {reply, {error, Reason, ReqID}, State}
-    end.
-
-%% @private
 do_delete(BKey, ReqId, State) ->
     Mod = State#state.mod,
     ModState = State#state.modstate,
@@ -1053,7 +1022,9 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 %% upon receipt of a handoff datum, there is no client FSM
 do_diffobj_put({Bucket, Key}, DiffObj,
                _StateData=#state{mod=Mod,
-                                 modstate=ModState}) ->
+                                 modstate=ModState,
+                                 idx=Idx}) ->
+    StartTS = os:timestamp(),
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case Mod:get(Bucket, Key, ModState) of
@@ -1069,7 +1040,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
             case Res of
                 {ok, _UpdModState} ->
                     update_index_write_stats(IndexBackend, IndexSpecs),
-                    riak_kv_stat:update(vnode_put);
+                    update_vnode_stats(vnode_put, Idx, StartTS);
                 _ -> nop
             end,
             Res;
@@ -1094,7 +1065,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     case Res of
                         {ok, _UpdModState} ->
                             update_index_write_stats(IndexBackend, IndexSpecs),
-                            riak_kv_stat:update(vnode_put);
+                            update_vnode_stats(vnode_put, Idx, StartTS);
                         _ ->
                             nop
                     end,
@@ -1201,6 +1172,11 @@ wait_for_vnode_status_results(PrefLists, ReqId, Acc) ->
             wait_for_vnode_status_results(PrefLists, ReqId, Acc)
     end.
 
+%% @private
+-spec update_vnode_stats(vnode_get | vnode_put, partition(), erlang:timestamp()) ->
+                                ok.
+update_vnode_stats(Op, Idx, StartTS) ->
+    riak_kv_stat:update({Op, Idx, timer:now_diff( os:timestamp(), StartTS)}).
 
 %% @private
 update_index_write_stats(false, _IndexSpecs) ->
@@ -1287,8 +1263,9 @@ assign_vnodeid_restart_earlier_ts_test() ->
 vnode_status_test_() ->
     {setup,
      fun() ->
-             os:cmd("chmod u+rwx kv_vnode_status_test"),
-             os:cmd("rm -rf kv_vnode_status_test"),
+             filelib:ensure_dir("kv_vnode_status_test/.test"),
+             ?cmd("chmod u+rwx kv_vnode_status_test"),
+             ?cmd("rm -rf kv_vnode_status_test"),
              application:set_env(riak_kv, vnode_status, "kv_vnode_status_test"),
              ok
      end,
@@ -1371,19 +1348,15 @@ backend_with_known_key(BackendMod) ->
                                    S1),
     {S2, B, K}.
 
-must_be_first_setup_stuff_test() ->
-    application:start(sasl),
-    erlang:put({?MODULE, kv}, application:get_all_env(riak_kv)).
-
 list_buckets_test_() ->
     {foreach,
      fun() ->
              application:start(sasl),
+             Env = application:get_all_env(riak_kv),
              application:start(folsom),
              riak_core_stat_cache:start_link(),
              riak_kv_stat:register_stats(),
-             application:get_all_env(riak_kv)
-
+             Env
      end,
      fun(Env) ->
              riak_core_stat_cache:stop(),
@@ -1456,11 +1429,6 @@ filter_keys_test() ->
     ?assertEqual({ok, []}, results_from_listener(Caller3)),
 
     flush_msgs().
-
-must_be_last_cleanup_stuff_test() ->
-    [application:unset_env(riak_kv, K) ||
-        {K, _V} <- application:get_all_env(riak_kv)],
-    [application:set_env(riak_kv, K, V) || {K, V} <- erlang:get({?MODULE, kv})].
 
 new_result_listener(Type) ->
     case Type of
