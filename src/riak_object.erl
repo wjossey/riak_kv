@@ -57,11 +57,24 @@
 
 -define(MAX_KEY_SIZE, 65536).
 
+%% Riak Objects in binary format (on disk)
+
+%% -type binobj_header()     :: <<53:8, Version:8, VClockLen:32, VClockBin/binary, 
+%%                                SibCount:32>>.
+%% -type binobj_flags()      :: <<Deleted:1, 0:7/bitstring>>.
+%% -type binobj_umeta_pair() :: <<KeyLen:32, Key/binary, ValueLen:32, Value/binary>>. 
+%% -type binobj_meta()       :: <<LastMod:LastModLen, VTag:128, binobj_flags(),
+%%                                [binobj_umeta_pair()]>>.
+%% -type binobj_value()      :: <<ValueLen:32, ValueBin/binary, MetaLen:32, 
+%%                                [binobj_meta()]>>.
+%% -type binobj()            :: <<binobj_header(), [binobj_value()]>>.
+
 -type r_object_bin() :: binary().
 -type r_content_bin() :: binary().
 %% -type rfc1123_date() :: string(). % LastMod Date
 
 -define(LASTMOD_LEN, 29). %% static length of rfc1123_date() type. Hard-coded in Erlang.
+-define(V1_VERS, 1).
 -define(MAGIC, 53).      %% Magic number, as opposed to 131 for Erlang term-to-binary magic
                          %% Shanley's(11) + Joe's(42)
 
@@ -131,12 +144,11 @@ meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer, V
 %% @doc Contruct new binary riak objects.
 -spec new_v1(vclock:vclock(), [#r_content{}]) -> r_object_bin().
 new_v1(Vclock, Siblings) ->
-    Ver = <<1:8/integer>>,
     VclockBin = term_to_binary(Vclock),
     VclockLen = byte_size(VclockBin),
     SibCount = length(Siblings),
     SibsBin = bin_contents(Siblings),
-    <<?MAGIC:8/integer, Ver, VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
+    <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
 -spec bin_content(#r_content{}) -> r_content_bin().
 bin_content(#r_content{metadata=Meta, value=Val}) ->
